@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document OCR</title>
+    <script>
+        async function uploadDocument() {
+            const fileInput = document.getElementById('document');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('Please select a file to upload.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('document', file);
+
+            const response = await fetch('/upload_document', {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await response.json();
+            document.getElementById('result').innerText = JSON.stringify(result, null, 2);
+        }
+    </script>
+</head>
+
+<body>
+    <h1>Upload Document for OCR</h1>
+    <input type="file" id="document" accept="image/*">
+    <button onclick="uploadDocument()">Upload</button>
+    <pre id="result" style="background-color: #f0f0f0; padding: 10px; border: 1px solid #ccc;"></pre>
+</body>
+
+</html>

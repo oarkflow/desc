@@ -3,6 +3,7 @@ import os
 import cv2
 import numpy as np
 from blink import APILivenessDetector
+import pytesseract
 
 app = Flask(__name__)
 
@@ -52,6 +53,35 @@ def start_detection():
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/upload_document', methods=['POST'])
+def upload_document():
+    """Perform OCR on uploaded document"""
+    try:
+        # Get the uploaded file
+        file = request.files['document']
+        if not file:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        # Read the image
+        image = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
+
+        # Preprocess the image for better OCR results
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        processed_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+        # Perform OCR
+        custom_config = r'--oem 3 --psm 6'
+        text = pytesseract.image_to_string(processed_image, config=custom_config, lang='eng+nep')
+
+        return jsonify({"text": text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/upload')
+def upload():
+    """Serve the document upload page"""
+    return render_template('upload.html')
 
 if __name__ == '__main__':
     print("Starting webcam-based face and blink detection server...")
