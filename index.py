@@ -46,44 +46,9 @@ def get_video():
 
 @app.route('/start_detection', methods=['GET'])
 def start_detection():
-    """Start real-time detection for 5 seconds"""
+    """Start real-time detection for 5 seconds and check authenticity"""
     try:
-        cap = cv2.VideoCapture(0)  # Open webcam
-        if not cap.isOpened():
-            return jsonify({"error": "Cannot access webcam"}), 500
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        max_frames = int(fps * 5)  # 5 seconds duration
-
-        detector.blink_count = 0
-        detector.consecutive_low_ear = 0
-
-        frame_count = 0
-        frames_with_face = 0
-
-        while frame_count < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            frame_count += 1
-            blink_detected, ear_value, face_detected = detector.detect_blink(frame)
-
-            if face_detected:
-                frames_with_face += 1
-
-        cap.release()
-
-        face_detection_rate = frames_with_face / max(frame_count, 1)
-        is_live = (detector.blink_count >= 4 and face_detection_rate > 0.5)
-
-        results = {
-            "is_live": is_live,
-            "blink_count": detector.blink_count,
-            "face_detection_rate": face_detection_rate,
-            "frames_processed": frame_count
-        }
-
+        results = detector.analyze_webcam_with_authenticity_check(duration=5)
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

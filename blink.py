@@ -241,6 +241,70 @@ class APILivenessDetector:
         print(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks)")
         return results
 
+    def analyze_webcam_with_authenticity_check(self, duration=10):
+        """Analyze webcam feed and check for authenticity"""
+        cap = cv2.VideoCapture(0)  # Open webcam
+        if not cap.isOpened():
+            return {"error": "Cannot access webcam"}
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        max_frames = int(fps * duration)
+
+        # Reset counters
+        self.blink_count = 0
+        self.consecutive_low_ear = 0
+
+        frame_count = 0
+        frames_with_face = 0
+        movement_detected = False
+
+        print(f"Analyzing webcam feed with authenticity check... (max {duration}s)")
+
+        prev_landmarks = None
+
+        while frame_count < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_count += 1
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.face_mesh.process(rgb_frame)
+
+            if results.multi_face_landmarks:
+                face_landmarks = results.multi_face_landmarks[0]
+                frames_with_face += 1
+
+                # Check for movement
+                if prev_landmarks:
+                    for idx, landmark in enumerate(face_landmarks.landmark):
+                        prev = prev_landmarks[idx]
+                        curr = (landmark.x, landmark.y, landmark.z)
+                        if abs(prev[0] - curr[0]) > 0.01 or abs(prev[1] - curr[1]) > 0.01:
+                            movement_detected = True
+                            break
+
+                prev_landmarks = [(landmark.x, landmark.y, landmark.z) for landmark in face_landmarks.landmark]
+
+                # Detect blink
+                blink_detected, ear_value, face_detected = self.detect_blink(frame)
+
+        cap.release()
+
+        face_detection_rate = frames_with_face / max(frame_count, 1)
+        is_live = (self.blink_count >= 4 and face_detection_rate > 0.5 and movement_detected)
+
+        results = {
+            "is_live": is_live,
+            "blink_count": self.blink_count,
+            "face_detection_rate": face_detection_rate,
+            "movement_detected": movement_detected,
+            "frames_processed": frame_count
+        }
+
+        print(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks, movement detected: {movement_detected})")
+        return results
+
 # Simple usage function
 def analyze_api_video(api_url, headers=None, min_blinks=4, duration=10, ear_threshold=0.2):
 
