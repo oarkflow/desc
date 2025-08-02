@@ -15,8 +15,18 @@
                 return;
             }
 
+            // gather selected languages
+            const langs = Array.from(document.querySelectorAll('input[name="lang"]:checked'))
+                .map(cb => cb.value);
+            if (langs.length === 0) {
+                alert('Please select at least one language.');
+                return;
+            }
+
             const formData = new FormData();
             formData.append('document', file);
+            // append each language value
+            langs.forEach(l => formData.append('lang', l));
 
             const response = await fetch('/upload_document', {
                 method: 'POST',
@@ -27,12 +37,31 @@
             document.getElementById('result').innerText = JSON.stringify(result, null, 2);
         }
     </script>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 1em;
+        }
+
+        fieldset {
+            margin: 1em 0;
+        }
+    </style>
 </head>
 
 <body>
     <h1>Upload Document for OCR</h1>
-    <input type="file" id="document" accept="image/*">
+
+    <input type="file" id="document" accept="image/*,application/pdf"><br>
+
+    <fieldset>
+        <legend>Select OCR Language(s):</legend>
+        <label><input type="checkbox" name="lang" value="eng" checked> English</label><br>
+        <label><input type="checkbox" name="lang" value="nep"> Nepali</label>
+    </fieldset>
+
     <button onclick="uploadDocument()">Upload</button>
+
     <pre id="result" style="background-color: #f0f0f0; padding: 10px; border: 1px solid #ccc;"></pre>
 </body>
 
