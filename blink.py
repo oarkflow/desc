@@ -247,6 +247,11 @@ class APILivenessDetector:
         if not cap.isOpened():
             return {"error": "Cannot access webcam"}
 
+        # Set optimal quality settings
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)  # Full HD width
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)  # Full HD height
+        cap.set(cv2.CAP_PROP_FPS, 60)  # 60 FPS for smoother video
+
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         max_frames = int(fps * duration)
 
@@ -268,7 +273,7 @@ class APILivenessDetector:
                 break
 
             frame_count += 1
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Preserve color space
             results = self.face_mesh.process(rgb_frame)
 
             if results.multi_face_landmarks:

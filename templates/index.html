@@ -2,59 +2,104 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Blink Detection</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Webcam Blink Detection with Proof</title>
     <script>
-        let video;
-        let canvas;
-        let context;
+        let video, canvas, context;
+        let stream, captureInterval;
+        let recorder, recordedChunks = [];
 
         async function startWebcam() {
             video = document.getElementById('webcam');
             canvas = document.getElementById('canvas');
             context = canvas.getContext('2d');
 
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            stream = await navigator.mediaDevices.getUserMedia({ video: true });
             video.srcObject = stream;
-            video.play();
+            await video.play();
 
-            setInterval(captureFrame, 100);
+            captureInterval = setInterval(captureFrame, 100);
+
+            recordedChunks = [];
+            recorder = new MediaRecorder(stream);
+            recorder.ondataavailable = e => {
+                if (e.data && e.data.size) recordedChunks.push(e.data);
+            };
+            recorder.start();
         }
 
-        async function captureFrame() {
+        function stopWebcam() {
+            clearInterval(captureInterval);
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
+        }
+
+        function captureFrame() {
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
             const frame = canvas.toDataURL('image/jpeg');
-
-            const response = await fetch('/process_frame', {
+            fetch('/process_frame', {
                 method: 'POST',
                 body: frame,
-                headers: {
-                    'Content-Type': 'application/octet-stream'
+                headers: { 'Content-Type': 'application/octet-stream' }
+            });
+        }
+
+        async function runDetectionAndHandleRecording() {
+            const response = await fetch('/start_detection', { method: 'GET' });
+            const result = await response.json();
+
+            document.getElementById('result')
+                .innerText = JSON.stringify(result, null, 2);
+
+            stopWebcam();
+            recorder.stop();
+
+            recorder.onstop = () => {
+                const { blink_count, movement_detected } = result;
+                const proofContainer = document.getElementById('controls');
+
+                // assemble the recorded blob
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const url = URL.createObjectURL(blob);
+
+                if (blink_count >= 5 && movement_detected) {
+                    // 1) show playback video
+                    const proofVideo = document.createElement('video');
+                    proofVideo.controls = true;
+                    proofVideo.width = 640;
+                    proofVideo.src = url;
+                    proofContainer.appendChild(proofVideo);
+
+                    // 2) also provide download link if desired
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'detection_proof.webm';
+                    a.textContent = 'Download proof video';
+                    proofContainer.appendChild(a);
+                } else {
+                    // no proof—just revoke URL
+                    URL.revokeObjectURL(url);
                 }
-            });
-
-            const result = await response.json();
-            console.log(result);
+            };
         }
 
-        async function startDetection() {
-            const response = await fetch('/start_detection', {
-                method: 'GET'
-            });
-
-            const result = await response.json();
-            document.getElementById('result').innerText = JSON.stringify(result, null, 2);
+        async function handleStart() {
+            await startWebcam();
+            // adjust delay as needed
+            setTimeout(runDetectionAndHandleRecording, 500);
         }
-
-        window.onload = startWebcam;
     </script>
 </head>
 
 <body>
-    <h1>Webcam Blink Detection</h1>
-    <button onclick="startDetection()">Start Detection</button>
-    <pre id="result" style="background-color: #f0f0f0; padding: 10px; border: 1px solid #ccc;"></pre>
+    <h1>Webcam Blink Detection with Proof</h1>
+    <button onclick="handleStart()">Start Detection</button>
+    <div id="controls"></div>
+
+    <pre id="result" style="background-color: #f0f0f0; padding: 10px; border: 1px solid #ccc;">
+  </pre>
+
     <video id="webcam" width="640" height="480" autoplay></video>
     <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
 </body>
