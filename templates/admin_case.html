@@ -152,26 +152,9 @@
                     <h3>{{ doc.side }} - {{ document_types.get(doc.document_type, {}).get("label", doc.document_type) }}</h3>
                     <img src="/admin/evidence/documents/{{ doc.id }}" alt="{{ doc.side }} document">
                     <p><strong>SHA-256</strong><br><small>{{ doc.sha256 }}</small></p>
-                    <p><strong>OCR risk</strong> {{ doc.risk_status }}</p>
-                    {% set fields = doc.normalized.get("structured_fields", {}) %}
-                    {% if fields %}
-                    <p><strong>Structured OCR Fields</strong></p>
-                    <div class="box">
-                        <strong>Document type</strong><br>{{ fields.get("document_type_label", fields.get("document_type", "Not detected")) }}<br><br>
-                        <strong>Citizenship number</strong><br>{{ fields.get("citizenship_number", "Not detected") }}<br><br>
-                        <strong>Name</strong><br>{{ fields.get("full_name_np", "Not detected") }}<br><br>
-                        <strong>Gender</strong><br>{{ fields.get("gender_np", fields.get("gender", "Not detected")) }}<br><br>
-                        <strong>Date of birth (B.S.)</strong><br>{{ fields.get("date_of_birth_bs", {}).get("formatted", "Not detected") }}<br><br>
-                        <strong>Father name</strong><br>{{ fields.get("father_name_np", "Not detected") }}<br><br>
-                        <strong>Citizenship type</strong><br>{{ fields.get("citizenship_type_np", fields.get("citizenship_type", "Not detected")) }}<br><br>
-                        <strong>Address</strong><br>{{ fields.get("address_np", "Not detected") }}<br><br>
-                        <strong>Field confidence</strong><br>{{ fields.get("field_confidence", "Not detected") }}
-                    </div>
-                    {% endif %}
-                    <p><strong>OCR metadata</strong></p>
+                    <p><strong>Document status</strong> {{ doc.risk_status }}</p>
+                    <p><strong>HTTP gateway response</strong></p>
                     <pre>{{ doc.normalized_json }}</pre>
-                    <p><strong>OCR text</strong></p>
-                    <pre>{{ doc.ocr_raw or "No OCR text extracted; manual review required." }}</pre>
                 </div>
                 {% else %}
                 <p>No documents uploaded.</p>

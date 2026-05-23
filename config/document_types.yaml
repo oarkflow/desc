@@ -1,0 +1,35 @@
+document_types:
+  - id: passport
+    label: Passport
+    country: global
+    category: passport
+    sides: [front]
+    profile_fields: [document_number, expiry_date]
+
+  - id: national_id
+    label: National ID / Citizenship ID
+    country: NP
+    category: citizenship
+    sides: [front, back]
+    profile_fields: [document_number]
+
+  - id: driving_license
+    label: Driving License
+    country: global
+    category: driving_license
+    sides: [front, back]
+    profile_fields: [document_number, expiry_date]
+
+  - id: voter_id
+    label: Voter ID
+    country: global
+    category: voter_id
+    sides: [front, back]
+    profile_fields: [document_number]
+
+  - id: other_government_id
+    label: Other Government ID
+    country: global
+    category: government_id
+    sides: [front, back]
+    profile_fields: [document_number]

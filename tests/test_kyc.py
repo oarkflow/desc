@@ -1,8 +1,9 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from kyc import KYCRepository, LocalEvidenceStorage, OCRService
+from kyc import DocumentConfigError, DocumentRegistry, KYCRepository, LocalEvidenceStorage
 
 
 class KYCPersistenceTests(unittest.TestCase):
@@ -59,12 +60,15 @@ class KYCPersistenceTests(unittest.TestCase):
             "front",
             file_info,
             "image/jpeg",
-            {"raw_text": "PASSPORT P1234567", "normalized": {"candidate_ids": ["P1234567"]}, "risk_status": "pass"},
+            {"engine": "http_gateway", "response": {"values": {"passport_number": "P1234567"}}},
         )
 
         case = self.repo.get_case(session_id)
-        self.assertEqual(case["documents"][0]["sha256"], file_info["sha256"])
-        self.assertTrue(Path(case["documents"][0]["file_path"]).exists())
+        document = case["documents"][0]
+        self.assertEqual(document["sha256"], file_info["sha256"])
+        self.assertEqual(document["risk_status"], "uploaded")
+        self.assertEqual(json.loads(document["normalized_json"])["gateway"]["engine"], "http_gateway")
+        self.assertTrue(Path(document["file_path"]).exists())
 
     def test_submit_requires_all_required_evidence(self):
         session_id = self.repo.create_session()["id"]
@@ -102,35 +106,33 @@ class KYCPersistenceTests(unittest.TestCase):
         self.assertEqual(case["session"]["review_status"], "auto_checks_passed")
 
 
-class OCRTests(unittest.TestCase):
-    def test_normalize_extracts_candidate_ids_and_dates(self):
-        result = OCRService().normalize("Passport No P1234567 expires 2030-12-31 नाम राम")
-        self.assertIn("P1234567", result["candidate_ids"])
-        self.assertIn("2030-12-31", result["candidate_dates"])
-        self.assertIn("नाम", result["nepali_terms"])
+class DocumentRegistryTests(unittest.TestCase):
+    def test_loads_json_document_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "document_types.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "document_types": [
+                            {
+                                "id": "test_id",
+                                "label": "Test ID",
+                                "sides": ["front"],
+                                "profile_fields": ["document_number"],
+                            }
+                        ]
+                    }
+                )
+            )
+            registry = DocumentRegistry(path)
+            self.assertEqual(registry.public_types()["test_id"]["label"], "Test ID")
 
-    def test_text_and_confidence_ignores_empty_low_confidence_items(self):
-        data = {"text": ["", "AARAV", "NP-DEMO-102938"], "conf": ["-1", "80", "70"]}
-        text, confidence = OCRService().text_and_confidence(data)
-        self.assertEqual(text, "AARAV NP-DEMO-102938")
-        self.assertEqual(confidence, 75)
-
-    def test_nepal_citizenship_structured_fields(self):
-        text = (
-            "नेपाली नागरिकताको प्रमाणपत्र ना.प्र.नं. १४-०१-७१-००३५० "
-            "नामथर अजय कुमार चौधरी लिङ्ग पुरुष "
-            "जिल्ला उदयपुर गा.वि. स. सुन्दरपुर वडा न. १ "
-            "साल २०५३ महिना ०४ गते ३० थर भरत चौधरी ना.कि. बंशज"
-        )
-        fields = OCRService().extract_structured_fields(text)
-        self.assertEqual(fields["document_type"], "nepal_citizenship")
-        self.assertEqual(fields["citizenship_number"], "14-01-71-00350")
-        self.assertEqual(fields["full_name_np"], "अजय कुमार चौधरी")
-        self.assertEqual(fields["gender"], "male")
-        self.assertEqual(fields["date_of_birth_bs"]["formatted"], "2053-04-30")
-        self.assertEqual(fields["father_name_np"], "भरत चौधरी")
-        self.assertEqual(fields["citizenship_type"], "descent")
-        self.assertEqual(fields["district_np"], "उदयपुर")
+    def test_rejects_invalid_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "document_types.json"
+            path.write_text(json.dumps({"document_types": [{"id": "bad", "label": "Bad"}]}))
+            with self.assertRaises(DocumentConfigError):
+                DocumentRegistry(path)
 
 
 if __name__ == "__main__":

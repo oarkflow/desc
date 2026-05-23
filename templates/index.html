@@ -170,7 +170,7 @@
             margin-bottom: 6px;
         }
 
-        .ocr-preview {
+        .gateway-preview {
             margin-top: 12px;
         }
 
@@ -223,7 +223,7 @@
         </section>
 
         <section>
-            <h2>Document OCR</h2>
+            <h2>Document Upload</h2>
             <div class="upload-row">
                 <div>
                     <label for="documentType">Document type</label>
@@ -239,7 +239,7 @@
                     <label for="docFront">Front</label>
                     <input id="docFront" type="file" accept="image/*" />
                 </div>
-                <button id="frontUploadBtn" class="ghost" type="button" disabled>OCR Front</button>
+                <button id="frontUploadBtn" class="ghost" type="button" disabled>Upload Front</button>
             </div>
             <div class="upload-row">
                 <div></div>
@@ -247,11 +247,11 @@
                     <label for="docBack">Back</label>
                     <input id="docBack" type="file" accept="image/*" />
                 </div>
-                <button id="backUploadBtn" class="ghost" type="button" disabled>OCR Back</button>
+                <button id="backUploadBtn" class="ghost" type="button" disabled>Upload Back</button>
             </div>
-            <div class="ocr-preview">
-                <h3>Latest OCR Result</h3>
-                <pre id="ocrResult">Upload a document image to extract English/Nepali text.</pre>
+            <div class="gateway-preview">
+                <h3>Latest Gateway Result</h3>
+                <pre id="gatewayResult">Upload a document image to send it to the configured HTTP OCR gateway.</pre>
             </div>
         </section>
 
@@ -287,7 +287,7 @@
         const eventsEl = document.getElementById('events');
         const frontUploadBtn = document.getElementById('frontUploadBtn');
         const backUploadBtn = document.getElementById('backUploadBtn');
-        const ocrResultEl = document.getElementById('ocrResult');
+        const gatewayResultEl = document.getElementById('gatewayResult');
 
         function actionLabel(action) {
             return {
@@ -354,18 +354,13 @@
             form.append('file', input.files[0]);
             form.append('document_type', documentType);
             form.append('side', side);
-            ocrResultEl.textContent = 'Running English/Nepali OCR...';
+            gatewayResultEl.textContent = 'Sending document to HTTP OCR gateway...';
             const data = await api(`/api/kyc/sessions/${sessionId}/documents`, { method: 'POST', body: form });
             setStatus(data.case);
             uploadedDocumentSides.add(`${documentType}:${side}`);
-            ocrResultEl.textContent = JSON.stringify({
+            gatewayResultEl.textContent = JSON.stringify({
                 side,
-                risk_status: data.ocr.risk_status,
-                confidence: data.ocr.confidence,
-                languages: data.ocr.languages,
-                language_status: data.ocr.language_status,
-                normalized: data.ocr.normalized,
-                raw_text: data.ocr.raw_text
+                gateway: data.gateway
             }, null, 2);
         }
 
@@ -464,8 +459,8 @@
         });
 
         cameraBtn.addEventListener('click', startCamera);
-        frontUploadBtn.addEventListener('click', () => uploadDocument('front').catch(error => ocrResultEl.textContent = error.message));
-        backUploadBtn.addEventListener('click', () => uploadDocument('back').catch(error => ocrResultEl.textContent = error.message));
+        frontUploadBtn.addEventListener('click', () => uploadDocument('front').catch(error => gatewayResultEl.textContent = error.message));
+        backUploadBtn.addEventListener('click', () => uploadDocument('back').catch(error => gatewayResultEl.textContent = error.message));
 
         livenessBtn.addEventListener('click', () => {
             if (frameTimer) clearInterval(frameTimer);

@@ -15,13 +15,82 @@ import numpy as np
 from blink import APILivenessDetector
 
 
-DOCUMENT_TYPES = {
-    "passport": {"label": "Passport", "sides": ["front"], "fields": ["id_number", "expiry_date"]},
-    "national_id": {"label": "National ID / Citizenship ID", "sides": ["front", "back"], "fields": ["id_number"]},
-    "driving_license": {"label": "Driving License", "sides": ["front", "back"], "fields": ["id_number", "expiry_date"]},
-    "voter_id": {"label": "Voter ID", "sides": ["front", "back"], "fields": ["id_number"]},
-    "other_government_id": {"label": "Other Government ID", "sides": ["front", "back"], "fields": ["id_number"]},
-}
+class DocumentConfigError(ValueError):
+    pass
+
+
+class DocumentRegistry:
+    def __init__(self, config_path=None):
+        self.config_path = Path(config_path or os.environ.get("DOCUMENT_TYPES_CONFIG", "config/document_types.yaml"))
+        self.document_types = self.load(self.config_path)
+
+    def load(self, path):
+        if not path.exists():
+            raise DocumentConfigError(f"Document config not found: {path}")
+        if path.suffix.lower() in {".yaml", ".yml"}:
+            try:
+                import yaml
+            except Exception as error:
+                raise DocumentConfigError("PyYAML is required for YAML document config.") from error
+            data = yaml.safe_load(path.read_text()) or {}
+        elif path.suffix.lower() == ".json":
+            data = json.loads(path.read_text())
+        else:
+            raise DocumentConfigError("Document config must be .yaml, .yml, or .json")
+        return self.validate(data)
+
+    def validate(self, data):
+        docs = data.get("document_types")
+        if not isinstance(docs, list) or not docs:
+            raise DocumentConfigError("document_types must be a non-empty list")
+        registry = {}
+        for doc in docs:
+            if not isinstance(doc, dict):
+                raise DocumentConfigError("Each document type must be an object")
+            doc_id = doc.get("id")
+            if not doc_id or not re.fullmatch(r"[a-z0-9_/-]+", doc_id):
+                raise DocumentConfigError("Each document type needs a stable id")
+            if doc_id in registry:
+                raise DocumentConfigError(f"Duplicate document type id: {doc_id}")
+            sides = doc.get("sides")
+            if not isinstance(sides, list) or not sides or not all(isinstance(side, str) for side in sides):
+                raise DocumentConfigError(f"{doc_id}: sides must be a non-empty string list")
+            fields = doc.get("fields", [])
+            if not isinstance(fields, list):
+                raise DocumentConfigError(f"{doc_id}: fields must be a list")
+            for field in fields:
+                if not field.get("id") or not field.get("label"):
+                    raise DocumentConfigError(f"{doc_id}: every field needs id and label")
+                side = field.get("side")
+                if side and side not in sides:
+                    raise DocumentConfigError(f"{doc_id}.{field.get('id')}: side {side} is not in sides")
+                rules = field.get("rules", [])
+                if not isinstance(rules, list):
+                    raise DocumentConfigError(f"{doc_id}.{field.get('id')}: rules must be a list")
+                for rule in rules:
+                    if rule.get("type") not in {"regex", "anchor", "date_parts", "enum"}:
+                        raise DocumentConfigError(f"{doc_id}.{field.get('id')}: unsupported rule type")
+            registry[doc_id] = doc
+        return registry
+
+    def get(self, doc_id):
+        return self.document_types.get(doc_id)
+
+    def public_types(self):
+        public = {}
+        for doc_id, doc in self.document_types.items():
+            public[doc_id] = {
+                "label": doc.get("label", doc_id),
+                "country": doc.get("country"),
+                "category": doc.get("category"),
+                "sides": doc.get("sides", []),
+                "fields": doc.get("profile_fields", []),
+            }
+        return public
+
+
+DOCUMENT_REGISTRY = DocumentRegistry()
+DOCUMENT_TYPES = DOCUMENT_REGISTRY.public_types()
 
 APPLICANT_STATUSES = {"draft", "submitted", "resubmission_requested", "approved", "rejected"}
 REVIEW_STATUSES = {
@@ -140,7 +209,6 @@ class KYCRepository:
                     content_type TEXT,
                     sha256 TEXT NOT NULL,
                     size INTEGER NOT NULL,
-                    ocr_raw TEXT NOT NULL DEFAULT '',
                     normalized_json TEXT NOT NULL DEFAULT '{}',
                     risk_status TEXT NOT NULL,
                     created_at TEXT NOT NULL
@@ -285,17 +353,18 @@ class KYCRepository:
             )
         self.audit(session_id, "profile_saved", {"document_type": doc_type})
 
-    def add_document(self, session_id, document_type, side, file_info, content_type, ocr_result):
+    def add_document(self, session_id, document_type, side, file_info, content_type, gateway_result=None):
         if document_type not in DOCUMENT_TYPES:
             raise ValueError("Unsupported document type")
         if side not in DOCUMENT_TYPES[document_type]["sides"]:
             raise ValueError("Unsupported document side")
+        gateway_result = gateway_result or {}
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO documents(session_id, document_type, side, file_path, original_filename, content_type,
-                sha256, size, ocr_raw, normalized_json, risk_status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sha256, size, normalized_json, risk_status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -306,9 +375,8 @@ class KYCRepository:
                     content_type,
                     file_info["sha256"],
                     file_info["size"],
-                    ocr_result["raw_text"],
-                    json.dumps(ocr_result["normalized"]),
-                    ocr_result["risk_status"],
+                    json.dumps({"gateway": gateway_result}),
+                    "uploaded",
                     now_iso(),
                 ),
             )
@@ -382,8 +450,6 @@ class KYCRepository:
 
     def compute_review_status(self, case):
         warnings = []
-        if any(doc["risk_status"] != "pass" for doc in case["documents"]):
-            warnings.append("ocr")
         usable_liveness = [check for check in case["liveness_checks"] if check["status"] in {"pass", "warn"}]
         if not usable_liveness:
             return "failed_checks"
@@ -453,360 +519,58 @@ class KYCRepository:
         self.audit(session_id, "evidence_deleted", {})
 
 
-class OCRService:
-    def __init__(self, languages=("eng", "nep")):
-        self.languages = languages
 
-    def available_languages(self):
+class OCRGatewayClient:
+    def __init__(self, base_url=None, api_key=None, timeout_seconds=None):
+        self.base_url = (base_url or os.environ.get("OCR_GATEWAY_URL") or "http://localhost:8000").rstrip("/")
+        self.api_key = api_key if api_key is not None else os.environ.get("OCR_GATEWAY_API_KEY") or os.environ.get("GATEWAY_API_KEY")
+        self.timeout_seconds = float(timeout_seconds or os.environ.get("OCR_GATEWAY_TIMEOUT_SECONDS", 90))
+
+    def extract(self, image_path, document_type=None):
         try:
-            import pytesseract
+            import requests
+        except Exception as error:
+            raise ValueError("requests is required to call the OCR HTTP gateway") from error
 
-            return sorted(pytesseract.get_languages(config=""))
-        except Exception:
-            return []
-
-    def language_config(self):
-        available = set(self.available_languages())
-        selected = [language for language in self.languages if language in available]
-        if not selected and "eng" in available:
-            selected = ["eng"]
-        if not selected:
-            return "", "unavailable"
-        return "+".join(selected), "full" if set(self.languages).issubset(available) else "partial"
-
-    def extract(self, image_path):
-        image = cv2.imread(str(image_path))
-        lang, language_status = self.language_config()
-        if image is None:
-            return {
-                "engine": "unavailable",
-                "languages": [],
-                "language_status": language_status,
-                "raw_text": "",
-                "normalized": {},
-                "risk_status": "needs_manual_review",
-                "confidence": 0,
-                "variants": [],
-            }
-        if not lang:
-            normalized = self.normalize("")
-            normalized["ocr_error"] = "No Tesseract language data available."
-            return {
-                "engine": "unavailable",
-                "languages": [],
-                "language_status": language_status,
-                "raw_text": "",
-                "normalized": normalized,
-                "risk_status": "needs_manual_review",
-                "confidence": 0,
-                "variants": [],
-            }
+        path = Path(image_path)
+        params = {"values_only": "false"}
+        if document_type:
+            params["document_type"] = document_type
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
 
         try:
-            import pytesseract
-        except Exception:
-            normalized = self.normalize("")
-            normalized["ocr_error"] = "pytesseract is not installed."
-            return {
-                "engine": "unavailable",
-                "languages": lang.split("+"),
-                "language_status": language_status,
-                "raw_text": "",
-                "normalized": normalized,
-                "risk_status": "needs_manual_review",
-                "confidence": 0,
-                "variants": [],
-            }
+            with path.open("rb") as handle:
+                response = requests.post(
+                    f"{self.base_url}/ocr",
+                    params=params,
+                    files={"file": (path.name, handle, "application/octet-stream")},
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                )
+        except requests.RequestException as error:
+            raise ValueError(f"OCR HTTP gateway request failed: {error}") from error
 
-        variants = self.preprocess_variants(image)
-        results = []
-        for name, variant in variants:
-            for psm in (6, 11, 4):
-                config = f"--oem 1 --psm {psm} -c preserve_interword_spaces=1"
-                try:
-                    data = pytesseract.image_to_data(
-                        variant,
-                        lang=lang,
-                        config=config,
-                        output_type=pytesseract.Output.DICT,
-                    )
-                except Exception as error:
-                    results.append({"variant": name, "psm": psm, "text": "", "confidence": 0, "error": str(error)})
-                    continue
-                text, confidence = self.text_and_confidence(data)
-                results.append({"variant": name, "psm": psm, "text": text, "confidence": confidence})
-
-        best = max(results, key=lambda result: (result["confidence"], len(result["text"])), default={"text": "", "confidence": 0})
-        raw_text = best["text"]
-        confidence = best["confidence"]
-        aggregate_text = "\n".join(
-            dict.fromkeys(result["text"] for result in results if result.get("text"))
-        )
-
-        normalized = self.normalize(f"{raw_text}\n{aggregate_text}")
-        normalized["ocr_confidence"] = confidence
-        normalized["ocr_languages"] = lang.split("+")
-        normalized["language_status"] = language_status
-        normalized["best_variant"] = best.get("variant")
-        normalized["best_psm"] = best.get("psm")
-        risk_status = "pass" if raw_text.strip() and confidence >= 55 else "needs_manual_review"
-        return {
-            "engine": "tesseract",
-            "languages": lang.split("+"),
-            "language_status": language_status,
-            "raw_text": raw_text,
-            "normalized": normalized,
-            "risk_status": risk_status,
-            "confidence": confidence,
-            "variants": [
-                {
-                    "variant": result.get("variant"),
-                    "psm": result.get("psm"),
-                    "confidence": result.get("confidence", 0),
-                    "text_length": len(result.get("text", "")),
-                    "error": result.get("error"),
-                }
-                for result in results
-            ],
-        }
-
-    def preprocess_variants(self, image):
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        scale = 2 if max(gray.shape[:2]) < 1600 else 1
-        if scale > 1:
-            gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        denoised = cv2.fastNlMeansDenoising(gray, None, 15, 7, 21)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(denoised)
-        sharpened = cv2.addWeighted(clahe, 1.5, cv2.GaussianBlur(clahe, (0, 0), 1.2), -0.5, 0)
-        adaptive = cv2.adaptiveThreshold(
-            sharpened,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            35,
-            11,
-        )
-        _, otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        return [
-            ("gray", gray),
-            ("clahe", clahe),
-            ("sharpened", sharpened),
-            ("adaptive_threshold", adaptive),
-            ("otsu_threshold", otsu),
-        ]
-
-    def text_and_confidence(self, data):
-        words = []
-        confidences = []
-        for text, confidence in zip(data.get("text", []), data.get("conf", [])):
-            text = text.strip()
-            if not text:
-                continue
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type.lower():
             try:
-                confidence = float(confidence)
-            except (TypeError, ValueError):
-                confidence = -1
-            if confidence >= 0:
-                confidences.append(confidence)
-            words.append(text)
-        mean_confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0
-        return " ".join(words), mean_confidence
+                body = response.json()
+            except ValueError:
+                body = {"raw_body": response.text}
+        else:
+            body = {"raw_body": response.text}
 
-    def normalize(self, text):
-        candidates = re.findall(r"[A-Z0-9][A-Z0-9/-]{5,}", text.upper())
-        dates = re.findall(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", text)
-        nepali_words = re.findall(r"[\u0900-\u097F]{2,}", text)
-        names = re.findall(r"\b[A-Z][A-Z .'/-]{2,}\b", text.upper())
+        if not response.ok:
+            message = body.get("error") if isinstance(body, dict) else None
+            raise ValueError(message or f"OCR HTTP gateway returned {response.status_code}")
+
         return {
-            "candidate_ids": candidates[:8],
-            "candidate_dates": dates[:8],
-            "candidate_names": names[:5],
-            "nepali_terms": nepali_words[:12],
-            "structured_fields": self.extract_structured_fields(text),
+            "engine": "http_gateway",
+            "upstream": self.base_url,
+            "status_code": response.status_code,
+            "response": body,
         }
-
-    def extract_structured_fields(self, text):
-        compact = re.sub(r"\s+", " ", text)
-        fields = {}
-
-        if "नागरिकता" in compact or "नागेरिक" in compact:
-            fields["document_type"] = "nepal_citizenship"
-            fields["document_type_label"] = "Nepal Citizenship Certificate"
-
-        citizenship_number = self.extract_citizenship_number(compact)
-        if citizenship_number:
-            fields["citizenship_number"] = citizenship_number
-
-        full_name = self.extract_nepali_name_near(compact, ["नामथर", "नाम थर", "नाम धर"], ["लिङ्ग", "लिङग", "ling"])
-        if full_name:
-            fields["full_name_np"] = full_name
-
-        if "पुरुष" in compact or "प्रुष" in compact:
-            fields["gender"] = "male"
-            fields["gender_np"] = "पुरुष"
-        elif "महिला" in compact:
-            fields["gender"] = "female"
-            fields["gender_np"] = "महिला"
-
-        birth_date = self.extract_birth_date_bs(compact)
-        if birth_date:
-            fields["date_of_birth_bs"] = birth_date
-
-        father_name = self.extract_known_person_after(compact, ["बाबुको", "बाबु", "थर :"], ["भरत", "चौधरी"])
-        if father_name:
-            fields["father_name_np"] = father_name
-
-        if "बंशज" in compact or "वंशज" in compact:
-            fields["citizenship_type_np"] = "वंशज"
-            fields["citizenship_type"] = "descent"
-
-        district = self.pick_first_present(compact, ["उदयपुर"])
-        if district:
-            fields["district_np"] = district
-
-        local_body = self.pick_first_present(compact, ["सुन्दरपुर", "सन्दरप्र", "सुन्देरप्र"])
-        if local_body:
-            fields["local_body_np"] = "सुन्दरपुर" if local_body != "सुन्दरपुर" else local_body
-
-        ward = self.extract_ward(compact)
-        if ward:
-            fields["ward_no"] = ward
-
-        if fields.get("local_body_np") or fields.get("district_np") or fields.get("ward_no"):
-            address_parts = []
-            if fields.get("local_body_np"):
-                address_parts.append(fields["local_body_np"])
-            if fields.get("ward_no"):
-                address_parts.append(f"वडा नं. {fields['ward_no']}")
-            if fields.get("district_np"):
-                address_parts.append(fields["district_np"])
-            fields["address_np"] = ", ".join(address_parts)
-
-        fields["field_confidence"] = self.structured_field_confidence(fields)
-        return fields
-
-    def extract_citizenship_number(self, text):
-        digit = "०-९0-9"
-        pattern = rf"[₹र]?\s*([{digit}]{{1,3}}[-–—][{digit}]{{1,3}}[-–—][{digit}]{{1,3}}[-–—][{digit}]{{3,8}})"
-        matches = re.findall(pattern, text)
-        if not matches:
-            return None
-        best = max(matches, key=len)
-        return self.to_ascii_digits(best.replace("–", "-").replace("—", "-"))
-
-    def extract_birth_date_bs(self, text):
-        match = re.search(
-            r"साल[:.\s]*([०-९0-9]{4})\s+महिना[:.\s]*([०-९0-9]{1,2})\s+(?:गते|ITT|TX)[:.,\s]*([०-९0-9]{1,2})",
-            text,
-        )
-        if not match:
-            return None
-        year, month, day = [self.to_ascii_digits(value).zfill(2) for value in match.groups()]
-        year = year[-4:]
-        return {"year": year, "month": month, "day": day, "formatted": f"{year}-{month}-{day}"}
-
-    def extract_nepali_name_near(self, text, start_markers, end_markers):
-        candidates = []
-        for marker in start_markers:
-            start = text.find(marker)
-            while start != -1:
-                end = min([idx for end_marker in end_markers if (idx := text.find(end_marker, start + len(marker))) != -1] or [start + 120])
-                window = text[start:end]
-                tokens = self.clean_nepali_tokens(re.findall(r"[\u0900-\u097F]{2,}", window))
-                if len(tokens) >= 2:
-                    name_tokens = tokens[:4]
-                    score = len(name_tokens)
-                    if "लिङ्ग" in window or "लिङग" in window:
-                        score += 3
-                    if len(name_tokens) in {2, 3}:
-                        score += 2
-                    if any(re.search(r"[०-९0-9]", token) for token in name_tokens):
-                        score -= 5
-                    candidates.append((score, " ".join(name_tokens)))
-                start = text.find(marker, start + 1)
-        if not candidates:
-            return None
-        return max(candidates, key=lambda item: item[0])[1]
-
-    def extract_known_person_after(self, text, markers, expected_tokens):
-        if all(token in text for token in expected_tokens):
-            return " ".join(expected_tokens)
-        for marker in markers:
-            start = text.find(marker)
-            if start == -1:
-                continue
-            tokens = self.clean_nepali_tokens(re.findall(r"[\u0900-\u097F]{2,}", text[start : start + 80]))
-            if len(tokens) >= 2:
-                return " ".join(tokens[:3])
-        return None
-
-    def clean_nepali_tokens(self, tokens):
-        stopwords = {
-            "नाम",
-            "नामथर",
-            "धर",
-            "थर",
-            "टा",
-            "मा",
-            "या",
-            "ला",
-            "लिङ्ग",
-            "लिङग",
-            "पुरुष",
-            "महिला",
-            "जन्मस्थान",
-            "जन्म",
-            "स्थान",
-            "जिल्ला",
-            "वडा",
-            "गते",
-            "साल",
-            "महिना",
-            "ना",
-            "प्र",
-            "नं",
-            "नेपाली",
-            "नागरिकताको",
-            "नागेरिकताकी",
-            "नागेरिकताकीो",
-            "प्रमाणपत्र",
-            "उदयपुर",
-            "सुन्दरपुर",
-            "सन्दरप्र",
-            "गा",
-            "वि",
-            "वडान",
-            "व्डान",
-            "वडार्न",
-            "गाःवि",
-            "गानविः",
-            "वञन",
-            "बेर",
-            "ठेगा",
-            "प्रश्न",
-        }
-        return [token for token in tokens if token not in stopwords and len(token) > 1]
-
-    def pick_first_present(self, text, values):
-        for value in values:
-            if value in text:
-                return value
-        return None
-
-    def extract_ward(self, text):
-        match = re.search(r"वडा\s*(?:नं|न|र्न|ार्न|ान)?[.:\s-]*([०-९0-9]{1,2})", text)
-        if match:
-            return self.to_ascii_digits(match.group(1))
-        return None
-
-    def structured_field_confidence(self, fields):
-        required = ["document_type", "citizenship_number", "full_name_np", "gender", "date_of_birth_bs", "father_name_np", "district_np"]
-        found = sum(1 for field in required if fields.get(field))
-        return round(found / len(required), 2)
-
-    def to_ascii_digits(self, value):
-        return value.translate(str.maketrans("०१२३४५६७८९", "0123456789"))
-
 
 class FaceMatchService:
     def __init__(self):

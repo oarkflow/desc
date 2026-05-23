@@ -5,4 +5,4 @@ numpy
 flask
 requests
 scipy
-pytesseract
+PyYAML

@@ -11,7 +11,7 @@ from kyc import (
     KYCRepository,
     LivenessService,
     LocalEvidenceStorage,
-    OCRService,
+    OCRGatewayClient,
     decode_data_url,
 )
 
@@ -20,7 +20,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-kyc-secret-change-me")
 
 repo = KYCRepository(os.environ.get("KYC_DB", "kyc.db"))
 storage = LocalEvidenceStorage(os.environ.get("EVIDENCE_DIR", "evidence"))
-ocr_service = OCRService()
+ocr_gateway = OCRGatewayClient()
 face_match_service = FaceMatchService()
 liveness_service = LivenessService()
 
@@ -113,9 +113,9 @@ def upload_document(session_id):
         document_type = request.form.get("document_type") or request.args.get("document_type")
         side = request.form.get("side") or request.args.get("side", "front")
         file_info = storage.save_bytes(session_id, "documents", filename, data)
-        ocr_result = ocr_service.extract(file_info["path"])
-        repo.add_document(session_id, document_type, side, file_info, content_type, ocr_result)
-        return jsonify({"document": file_info, "ocr": ocr_result, "case": case_summary(repo.get_case(session_id))})
+        gateway_result = ocr_gateway.extract(file_info["path"], document_type=document_type)
+        repo.add_document(session_id, document_type, side, file_info, content_type, gateway_result)
+        return jsonify({"document": file_info, "gateway": gateway_result, "case": case_summary(repo.get_case(session_id))})
     except ValueError as error:
         return json_error(str(error))
 
