@@ -4,104 +4,505 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Webcam Blink Detection with Proof</title>
+    <title>KYC Liveness Demo</title>
+    <style>
+        :root {
+            color: #172026;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f5f7f8;
+        }
+
+        body {
+            margin: 0;
+        }
+
+        header {
+            background: #ffffff;
+            border-bottom: 1px solid #d9e1e5;
+            padding: 18px 28px;
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 380px;
+            gap: 24px;
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        section,
+        aside {
+            background: #ffffff;
+            border: 1px solid #d9e1e5;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        h1,
+        h2,
+        h3 {
+            margin: 0 0 14px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 6px;
+            padding: 10px 14px;
+            background: #0f766e;
+            color: #fff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        button.secondary {
+            background: #334155;
+        }
+
+        button.ghost {
+            background: #475569;
+        }
+
+        button:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+        }
+
+        video,
+        canvas {
+            width: 100%;
+            background: #0f172a;
+            border-radius: 8px;
+            aspect-ratio: 4 / 3;
+            object-fit: cover;
+        }
+
+        .actions,
+        .challenge,
+        .signals {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 14px 0;
+        }
+
+        .pill {
+            border-radius: 999px;
+            padding: 7px 11px;
+            background: #e2e8f0;
+            color: #334155;
+            font-weight: 800;
+            font-size: 13px;
+        }
+
+        .pill.done {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .pill.active {
+            background: #e0f2fe;
+            color: #075985;
+        }
+
+        .signal {
+            flex: 1 1 150px;
+            border: 1px solid #d9e1e5;
+            border-radius: 8px;
+            padding: 12px;
+            background: #fbfcfc;
+        }
+
+        .signal strong {
+            display: block;
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 5px;
+        }
+
+        pre,
+        .status {
+            background: #edf2f4;
+            border-radius: 6px;
+            padding: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .profile {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .profile div {
+            background: #fbfcfc;
+            border: 1px solid #d9e1e5;
+            border-radius: 8px;
+            padding: 10px;
+        }
+
+        .upload-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            align-items: end;
+            gap: 10px;
+            margin: 12px 0;
+        }
+
+        input,
+        select {
+            box-sizing: border-box;
+            width: 100%;
+            border: 1px solid #bdc9cf;
+            border-radius: 6px;
+            padding: 10px 12px;
+            font: inherit;
+            background: #fff;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 6px;
+        }
+
+        .ocr-preview {
+            margin-top: 12px;
+        }
+
+        @media (max-width: 900px) {
+            main {
+                grid-template-columns: 1fr;
+                padding: 16px;
+            }
+
+            .profile {
+                grid-template-columns: 1fr;
+            }
+
+            .upload-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>KYC Liveness Demo</h1>
+        <div>Fake applicant data is preloaded. The demo focuses on webcam face detection, blink detection, and active liveness.</div>
+    </header>
+
+    <main>
+        <section>
+            <h2>Webcam Liveness</h2>
+            <div class="actions">
+                <button id="demoBtn">Start Demo Case</button>
+                <button id="cameraBtn" disabled>Start Webcam</button>
+                <button id="livenessBtn" disabled>Start Detection</button>
+                <button id="finishBtn" disabled>Finish Liveness</button>
+                <button id="submitBtn" disabled>Submit Demo</button>
+                <a href="/admin/cases"><button class="secondary" type="button">Admin Review</button></a>
+            </div>
+
+            <div id="challenge" class="challenge"></div>
+
+            <video id="webcam" autoplay muted playsinline></video>
+            <canvas id="canvas" width="640" height="480" hidden></canvas>
+
+            <div class="signals">
+                <div class="signal"><strong>Face</strong><span id="faceSignal">Waiting</span></div>
+                <div class="signal"><strong>Blink</strong><span id="blinkSignal">Waiting</span></div>
+                <div class="signal"><strong>Head</strong><span id="headSignal">Waiting</span></div>
+                <div class="signal"><strong>Score</strong><span id="scoreSignal">Waiting</span></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Document OCR</h2>
+            <div class="upload-row">
+                <div>
+                    <label for="documentType">Document type</label>
+                    <select id="documentType">
+                        <option value="national_id">National ID / Citizenship ID</option>
+                        <option value="passport">Passport</option>
+                        <option value="driving_license">Driving License</option>
+                        <option value="voter_id">Voter ID</option>
+                        <option value="other_government_id">Other Government ID</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="docFront">Front</label>
+                    <input id="docFront" type="file" accept="image/*" />
+                </div>
+                <button id="frontUploadBtn" class="ghost" type="button" disabled>OCR Front</button>
+            </div>
+            <div class="upload-row">
+                <div></div>
+                <div>
+                    <label for="docBack">Back</label>
+                    <input id="docBack" type="file" accept="image/*" />
+                </div>
+                <button id="backUploadBtn" class="ghost" type="button" disabled>OCR Back</button>
+            </div>
+            <div class="ocr-preview">
+                <h3>Latest OCR Result</h3>
+                <pre id="ocrResult">Upload a document image to extract English/Nepali text.</pre>
+            </div>
+        </section>
+
+        <aside>
+            <h2>Fake Applicant</h2>
+            <div id="profile" class="profile"></div>
+            <h3>Status</h3>
+            <div id="status" class="status">Start a demo case.</div>
+            <h3>Latest Detection</h3>
+            <pre id="events"></pre>
+        </aside>
+    </main>
+
     <script>
-        let video, canvas, context;
-        let stream, captureInterval;
-        let recorder, recordedChunks = [];
+        let sessionId = null;
+        let sessionCase = null;
+        let stream = null;
+        let frameTimer = null;
+        let recorder = null;
+        let recordedChunks = [];
+        let frameInFlight = false;
+        const uploadedDocumentSides = new Set();
 
-        async function startWebcam() {
-            video = document.getElementById('webcam');
-            canvas = document.getElementById('canvas');
-            context = canvas.getContext('2d');
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const context = canvas.getContext('2d');
+        const demoBtn = document.getElementById('demoBtn');
+        const cameraBtn = document.getElementById('cameraBtn');
+        const livenessBtn = document.getElementById('livenessBtn');
+        const finishBtn = document.getElementById('finishBtn');
+        const submitBtn = document.getElementById('submitBtn');
+        const statusEl = document.getElementById('status');
+        const eventsEl = document.getElementById('events');
+        const frontUploadBtn = document.getElementById('frontUploadBtn');
+        const backUploadBtn = document.getElementById('backUploadBtn');
+        const ocrResultEl = document.getElementById('ocrResult');
 
-            stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        function actionLabel(action) {
+            return {
+                blink: 'Blink once',
+                turn_left: 'Turn left',
+                turn_right: 'Turn right',
+                look_center: 'Look center'
+            }[action] || action;
+        }
+
+        async function api(path, options = {}) {
+            const response = await fetch(path, options);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Request failed');
+            return data;
+        }
+
+        function renderProfile(profile) {
+            if (!profile) {
+                document.getElementById('profile').innerHTML = '';
+                return;
+            }
+            document.getElementById('profile').innerHTML = `
+                <div><strong>Name</strong><br>${profile.full_name}</div>
+                <div><strong>DOB</strong><br>${profile.date_of_birth}</div>
+                <div><strong>Nationality</strong><br>${profile.nationality}</div>
+                <div><strong>ID</strong><br>${profile.document_number}</div>
+                <div><strong>Phone</strong><br>${profile.phone}</div>
+                <div><strong>Email</strong><br>${profile.email}</div>
+            `;
+        }
+
+        function renderChallenge(completed = {}) {
+            const challenge = sessionCase?.session?.challenge || [];
+            document.getElementById('challenge').innerHTML = challenge.map(action => {
+                const cls = completed[action] ? 'pill done' : 'pill active';
+                return `<span class="${cls}">${actionLabel(action)}</span>`;
+            }).join('');
+        }
+
+        function setStatus(caseData) {
+            sessionCase = caseData;
+            sessionId = caseData.session.id;
+            renderProfile(caseData.profile);
+            renderChallenge();
+            statusEl.textContent = JSON.stringify({
+                session_id: sessionId,
+                applicant_status: caseData.session.applicant_status,
+                review_status: caseData.session.review_status,
+                documents: caseData.documents.length,
+                liveness_checks: caseData.liveness_checks.length
+            }, null, 2);
+        }
+
+        async function uploadDocument(side) {
+            if (!sessionId) return alert('Start a demo case first.');
+            const input = document.getElementById(side === 'front' ? 'docFront' : 'docBack');
+            if (!input.files.length) return alert(`Choose a ${side} document image first.`);
+            const documentType = document.getElementById('documentType').value;
+            if (side === 'back' && documentType === 'passport') {
+                return alert('Passport only needs a front image in this demo.');
+            }
+            const form = new FormData();
+            form.append('file', input.files[0]);
+            form.append('document_type', documentType);
+            form.append('side', side);
+            ocrResultEl.textContent = 'Running English/Nepali OCR...';
+            const data = await api(`/api/kyc/sessions/${sessionId}/documents`, { method: 'POST', body: form });
+            setStatus(data.case);
+            uploadedDocumentSides.add(`${documentType}:${side}`);
+            ocrResultEl.textContent = JSON.stringify({
+                side,
+                risk_status: data.ocr.risk_status,
+                confidence: data.ocr.confidence,
+                languages: data.ocr.languages,
+                language_status: data.ocr.language_status,
+                normalized: data.ocr.normalized,
+                raw_text: data.ocr.raw_text
+            }, null, 2);
+        }
+
+        async function uploadSelectedDocumentsBeforeSubmit() {
+            const documentType = document.getElementById('documentType').value;
+            const sides = [
+                ['front', document.getElementById('docFront')],
+                ['back', document.getElementById('docBack')]
+            ];
+            for (const [side, input] of sides) {
+                if (!input.files.length) continue;
+                if (side === 'back' && documentType === 'passport') continue;
+                const key = `${documentType}:${side}`;
+                if (uploadedDocumentSides.has(key)) continue;
+                await uploadDocument(side);
+            }
+        }
+
+        function snapshotBlob() {
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+        }
+
+        async function startCamera() {
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
             video.srcObject = stream;
             await video.play();
+            livenessBtn.disabled = false;
+        }
 
-            captureInterval = setInterval(captureFrame, 100);
+        async function uploadSelfie() {
+            const blob = await snapshotBlob();
+            const form = new FormData();
+            form.append('file', blob, 'demo-selfie.jpg');
+            const data = await api(`/api/kyc/sessions/${sessionId}/selfie`, { method: 'POST', body: form });
+            setStatus(data.case);
+        }
 
+        function startRecorder() {
             recordedChunks = [];
-            recorder = new MediaRecorder(stream);
-            recorder.ondataavailable = e => {
-                if (e.data && e.data.size) recordedChunks.push(e.data);
+            const options = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+                ? { mimeType: 'video/webm;codecs=vp8,opus' }
+                : { mimeType: 'video/webm' };
+            recorder = new MediaRecorder(stream, options);
+            recorder.ondataavailable = event => {
+                if (event.data && event.data.size) recordedChunks.push(event.data);
             };
             recorder.start();
         }
 
-        function stopWebcam() {
-            clearInterval(captureInterval);
-            if (stream) stream.getTracks().forEach(t => t.stop());
-            video.srcObject = null;
-        }
-
-        function captureFrame() {
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const frame = canvas.toDataURL('image/jpeg');
-            fetch('/process_frame', {
-                method: 'POST',
-                body: frame,
-                headers: { 'Content-Type': 'application/octet-stream' }
+        async function stopRecorderAndUpload() {
+            if (!recorder) return null;
+            await new Promise(resolve => {
+                recorder.onstop = resolve;
+                recorder.stop();
             });
+            const blob = new Blob(recordedChunks, { type: recorder.mimeType || 'video/webm' });
+            const form = new FormData();
+            form.append('file', blob, 'demo-liveness.webm');
+            const data = await api(`/api/kyc/sessions/${sessionId}/liveness/video`, { method: 'POST', body: form });
+            return data;
         }
 
-        async function runDetectionAndHandleRecording() {
-            const response = await fetch('/start_detection', { method: 'GET' });
-            const result = await response.json();
-
-            document.getElementById('result')
-                .innerText = JSON.stringify(result, null, 2);
-
-            stopWebcam();
-            recorder.stop();
-
-            recorder.onstop = () => {
-                const { blink_count, movement_detected } = result;
-                const proofContainer = document.getElementById('controls');
-
-                // assemble the recorded blob
-                const blob = new Blob(recordedChunks, { type: 'video/webm' });
-                const url = URL.createObjectURL(blob);
-
-                if (blink_count >= 5 && movement_detected) {
-                    // 1) show playback video
-                    const proofVideo = document.createElement('video');
-                    proofVideo.controls = true;
-                    proofVideo.width = 640;
-                    proofVideo.src = url;
-                    proofContainer.appendChild(proofVideo);
-
-                    // 2) also provide download link if desired
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'detection_proof.webm';
-                    a.textContent = 'Download proof video';
-                    proofContainer.appendChild(a);
-                } else {
-                    // no proof—just revoke URL
-                    URL.revokeObjectURL(url);
+        async function sendFrame() {
+            if (frameInFlight) return;
+            frameInFlight = true;
+            const blob = await snapshotBlob();
+            const form = new FormData();
+            form.append('file', blob, 'frame.jpg');
+            try {
+                const result = await api(`/api/kyc/sessions/${sessionId}/liveness/frame`, { method: 'POST', body: form });
+                const state = result.liveness_state || {};
+                renderChallenge(state.completed || {});
+                document.getElementById('faceSignal').textContent = result.face_detected ? 'Detected' : 'Not detected';
+                document.getElementById('blinkSignal').textContent = `${state.blink_count || 0} blink(s)${result.blink_detected ? ' - just detected' : ''}`;
+                document.getElementById('headSignal').textContent = result.head_position || 'unknown';
+                document.getElementById('scoreSignal').textContent = `${state.risk_status || 'checking'} / face ${(state.face_detection_rate || 0)}`;
+                eventsEl.textContent = JSON.stringify(result, null, 2);
+                if (state.risk_status === 'pass') {
+                    finishBtn.disabled = false;
+                    submitBtn.disabled = false;
                 }
-            };
+            } finally {
+                frameInFlight = false;
+            }
         }
 
-        async function handleStart() {
-            await startWebcam();
-            // adjust delay as needed
-            setTimeout(runDetectionAndHandleRecording, 500);
-        }
+        demoBtn.addEventListener('click', async () => {
+            const data = await api('/api/kyc/demo-session', { method: 'POST' });
+            uploadedDocumentSides.clear();
+            setStatus(data);
+            cameraBtn.disabled = false;
+            frontUploadBtn.disabled = false;
+            backUploadBtn.disabled = false;
+            statusEl.textContent += '\n\nFake data loaded. Start webcam and follow the challenge.';
+        });
+
+        cameraBtn.addEventListener('click', startCamera);
+        frontUploadBtn.addEventListener('click', () => uploadDocument('front').catch(error => ocrResultEl.textContent = error.message));
+        backUploadBtn.addEventListener('click', () => uploadDocument('back').catch(error => ocrResultEl.textContent = error.message));
+
+        livenessBtn.addEventListener('click', () => {
+            if (frameTimer) clearInterval(frameTimer);
+            uploadSelfie().catch(error => eventsEl.textContent = error.message);
+            startRecorder();
+            frameTimer = setInterval(sendFrame, 220);
+            finishBtn.disabled = false;
+            livenessBtn.disabled = true;
+        });
+
+        finishBtn.addEventListener('click', async () => {
+            if (frameTimer) clearInterval(frameTimer);
+            const videoData = await stopRecorderAndUpload();
+            const data = await api(`/api/kyc/sessions/${sessionId}/liveness/complete`, { method: 'POST' });
+            setStatus(data.case);
+            eventsEl.textContent = JSON.stringify({
+                video_liveness: videoData?.liveness,
+                live_frame_liveness: data.liveness
+            }, null, 2);
+            submitBtn.disabled = false;
+        });
+
+        submitBtn.addEventListener('click', async () => {
+            submitBtn.disabled = true;
+            try {
+                statusEl.textContent += '\n\nUploading selected documents before submit...';
+                await uploadSelectedDocumentsBeforeSubmit();
+                const data = await api(`/api/kyc/sessions/${sessionId}/submit`, { method: 'POST' });
+                setStatus(data);
+                statusEl.textContent += '\n\nSubmitted. Open Admin Review to approve/reject.';
+            } catch (error) {
+                statusEl.textContent += `\n\nSubmit failed: ${error.message}`;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
     </script>
-</head>
-
-<body>
-    <h1>Webcam Blink Detection with Proof</h1>
-    <button onclick="handleStart()">Start Detection</button>
-    <div id="controls"></div>
-
-    <pre id="result" style="background-color: #f0f0f0; padding: 10px; border: 1px solid #ccc;">
-  </pre>
-
-    <video id="webcam" width="640" height="480" autoplay></video>
-    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
 </body>
 
 </html>

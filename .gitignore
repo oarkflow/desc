@@ -3,3 +3,7 @@
 __pycache__/
 *.py[cod]
 models/*.task
+models/tessdata/
+evidence/
+kyc.db
+kyc.db-*

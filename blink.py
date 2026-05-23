@@ -8,7 +8,7 @@ from pathlib import Path
 from scipy.spatial import distance as dist
 
 class APILivenessDetector:
-    def __init__(self, ear_threshold=0.18, consecutive_frames=1, model_path=None):
+    def __init__(self, ear_threshold=0.22, consecutive_frames=1, model_path=None):
         self.EAR_THRESHOLD = ear_threshold
         self.CONSECUTIVE_FRAMES = consecutive_frames
 
