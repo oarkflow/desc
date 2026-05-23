@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 import cv2
 import numpy as np
+import os
 from blink import APILivenessDetector
 
 app = Flask(__name__)
@@ -43,4 +44,4 @@ def start_detection():
 
 if __name__ == '__main__':
     print("Starting webcam-based face and blink detection server...")
-    app.run(debug=True, host='0.0.0.0', port=5555)
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5555)))
