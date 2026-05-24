@@ -13,6 +13,7 @@ import time
 import uuid
 import logging
 from contextlib import redirect_stdout
+from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional
@@ -85,6 +86,13 @@ class Settings:
     SERVER_WORKERS = int(os.getenv("OCR_WORKERS", "1"))
     SERVER_LOG_LEVEL = os.getenv("OCR_LOG_LEVEL", "info")
     SERVER_KEEP_ALIVE = int(os.getenv("OCR_KEEP_ALIVE", "15"))
+    TAMPER_ENABLED = os.getenv("OCR_TAMPER_ENABLED", "true").lower() == "true"
+    TAMPER_MODE = os.getenv("OCR_TAMPER_MODE", "standard").strip().lower()
+    MAX_PDF_PAGES = int(os.getenv("OCR_MAX_PDF_PAGES", "5"))
+    YOLO_MODEL_PATH = os.getenv("OCR_YOLO_MODEL_PATH", "").strip()
+    FACE_MODEL_PATH = os.getenv("OCR_FACE_MODEL_PATH", "").strip()
+    TAMPER_REVIEW_THRESHOLD = float(os.getenv("OCR_TAMPER_REVIEW_THRESHOLD", "0.35"))
+    TAMPER_REJECT_THRESHOLD = float(os.getenv("OCR_TAMPER_REJECT_THRESHOLD", "0.70"))
 
 
 settings = Settings()
@@ -392,7 +400,28 @@ class OCRResponse(BaseModel):
     items: list[OCRItem]
     objects: list[dict[str, Any]] = Field(default_factory=list)
     object_summary: dict[str, Any] = Field(default_factory=dict)
+    tamper_score: float = 0.0
+    status: str = "genuine"
+    flags: list[dict[str, Any]] = Field(default_factory=list)
+    manual_review_required: bool = False
+    tamper: dict[str, Any] = Field(default_factory=dict)
     meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class TamperFlag(BaseModel):
+    code: str
+    message: str
+    severity: str = "medium"
+    score: float = 0.0
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class TamperResult(BaseModel):
+    tamper_score: float = 0.0
+    status: str = "genuine"
+    flags: list[TamperFlag] = Field(default_factory=list)
+    manual_review_required: bool = False
+    checks: dict[str, Any] = Field(default_factory=dict)
 
 
 # ----------------------------
@@ -647,6 +676,24 @@ class ValidatorConfig(BaseModel):
     pattern: Optional[str] = None
 
 
+class ExpectedObjectConfig(BaseModel):
+    label: str
+    region: Optional[list[float]] = None
+    regions: list[list[float]] = Field(default_factory=list)
+    required: bool = False
+    min_confidence: float = 0.0
+
+
+class TamperConfig(BaseModel):
+    required_fields: list[str] = Field(default_factory=list)
+    field_regions: dict[str, Any] = Field(default_factory=dict)
+    protected_regions: dict[str, Any] = Field(default_factory=dict)
+    expected_objects: list[ExpectedObjectConfig] = Field(default_factory=list)
+    rule_weights: dict[str, float] = Field(default_factory=dict)
+    review_threshold: Optional[float] = None
+    reject_threshold: Optional[float] = None
+
+
 class ProfileFieldConfig(BaseModel):
     labels: list[str] = Field(default_factory=list)
     strategies: list[str] = Field(default_factory=list)
@@ -657,10 +704,12 @@ class ProfileFieldConfig(BaseModel):
     gazetteer: Optional[str] = None
     review_threshold: Optional[float] = None
     anchor_region: Optional[list[float]] = None
+    anchor_regions: list[list[float]] = Field(default_factory=list)
     source_passes: list[str] = Field(default_factory=list)
     source_kinds: list[str] = Field(default_factory=list)
     review_source_kinds: list[str] = Field(default_factory=list)
     retry_region: Optional[list[float]] = None
+    retry_regions: list[list[float]] = Field(default_factory=list)
     same_as_field: Optional[str] = None
     consistency_field: Optional[str] = None
     gazetteer_hint_fields: list[str] = Field(default_factory=list)
@@ -693,6 +742,7 @@ class DocumentProfile(BaseModel):
     detect: DetectConfig = Field(default_factory=DetectConfig)
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     fields: dict[str, ProfileFieldConfig] = Field(default_factory=dict)
+    tamper: TamperConfig = Field(default_factory=TamperConfig)
 
 
 class DocumentProfilesConfig(BaseModel):
@@ -844,6 +894,7 @@ ALLOWED_MIME_TYPES = {
     "image/webp",
     "image/bmp",
     "image/tiff",
+    "application/pdf",
 }
 
 
@@ -882,6 +933,67 @@ def load_image(data: bytes) -> np.ndarray:
         return np.array(pil)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid image file") from exc
+
+
+def load_document_pages(data: bytes, mime_type: str) -> list[dict[str, Any]]:
+    if mime_type == "application/pdf":
+        return load_pdf_pages(data)
+
+    image_rgb = load_image(data)
+    height, width = image_rgb.shape[:2]
+    return [
+        {
+            "page_number": 1,
+            "image": image_rgb,
+            "width": width,
+            "height": height,
+            "mime_type": mime_type,
+        }
+    ]
+
+
+def load_pdf_pages(data: bytes) -> list[dict[str, Any]]:
+    try:
+        import fitz
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="PDF support requires PyMuPDF",
+        ) from exc
+
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid PDF file") from exc
+
+    if document.page_count == 0:
+        raise HTTPException(status_code=400, detail="PDF has no pages")
+    if document.page_count > settings.MAX_PDF_PAGES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF has too many pages. Max allowed: {settings.MAX_PDF_PAGES}",
+        )
+
+    pages: list[dict[str, Any]] = []
+    try:
+        for index in range(document.page_count):
+            page = document.load_page(index)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+            image_rgb = np.array(image)
+            pages.append(
+                {
+                    "page_number": index + 1,
+                    "image": image_rgb,
+                    "width": pixmap.width,
+                    "height": pixmap.height,
+                    "mime_type": "application/pdf",
+                }
+            )
+    finally:
+        document.close()
+
+    return pages
 
 
 def preprocess_image(
@@ -1288,36 +1400,43 @@ def retry_profile_ocr(
                 return
 
             field_config = profile.fields[field_name]
-            crop = retry_crop_for_field(processed_image, fields.get(field_name), field_config)
-            if not crop:
+            crops = retry_crops_for_field(processed_image, fields.get(field_name), field_config)
+            if not crops:
                 runtime_meta["ocr_passes_skipped"].append(
                     {"name": pass_config.name, "field": field_name, "reason": "no_retry_region"}
                 )
                 continue
 
-            crop_image, offset = crop
-            retry_image = preprocess_retry_crop(crop_image, pass_config.preprocessing)
             pass_engine = OCREngine.instance(
                 lang or pass_config.lang,
                 text_detection_model=pass_config.text_detection_model,
                 text_recognition_model=resolved_text_recognition_model(pass_config),
                 ocr_version=pass_config.ocr_version,
             )
-            pass_items = pass_engine.read(
-                retry_image,
-                min_confidence=pass_config.min_confidence or settings.INTERNAL_MIN_CONFIDENCE,
-            )
-            append_ocr_items(extraction_items, pass_items, pass_config, seen, offset)
-            runtime_meta["ocr_passes_run"].append(
-                {
-                    "name": pass_config.name,
-                    "scope": "field_crop",
-                    "field": field_name,
-                    "items": len(pass_items),
-                }
-            )
-            if field_name not in runtime_meta["retry_fields"]:
-                runtime_meta["retry_fields"].append(field_name)
+            for crop_image, offset, crop_meta in crops:
+                if pass_budget_exhausted(runtime_meta, started, timeout_seconds, max_passes):
+                    runtime_meta["budget_exhausted"] = True
+                    runtime_meta["ocr_passes_skipped"].append(
+                        {"name": pass_config.name, "field": field_name, "reason": "budget_exhausted"}
+                    )
+                    return
+                retry_image = preprocess_retry_crop(crop_image, pass_config.preprocessing)
+                pass_items = pass_engine.read(
+                    retry_image,
+                    min_confidence=pass_config.min_confidence or settings.INTERNAL_MIN_CONFIDENCE,
+                )
+                append_ocr_items(extraction_items, pass_items, pass_config, seen, offset)
+                runtime_meta["ocr_passes_run"].append(
+                    {
+                        "name": pass_config.name,
+                        "scope": "field_crop",
+                        "field": field_name,
+                        "items": len(pass_items),
+                        **crop_meta,
+                    }
+                )
+                if field_name not in runtime_meta["retry_fields"]:
+                    runtime_meta["retry_fields"].append(field_name)
 
 
 def preprocess_retry_crop(
@@ -1388,32 +1507,48 @@ def fields_for_retry(
     return list(dict.fromkeys(selected))
 
 
+def retry_crops_for_field(
+    processed_image: np.ndarray,
+    field: Optional[OCRField],
+    field_config: ProfileFieldConfig,
+) -> list[tuple[np.ndarray, tuple[int, int], dict[str, Any]]]:
+    height, width = processed_image.shape[:2]
+    candidates: list[tuple[tuple[float, float, float, float], dict[str, Any]]] = []
+    for index, region in enumerate(field_retry_regions(field_config)):
+        candidates.append(
+            (
+                normalized_region_to_bounds(region, width, height),
+                {"source": "configured_region", "region": region, "region_index": index},
+            )
+        )
+    if not candidates and field:
+        bounds = evidence_bounds(field.evidence)
+        if bounds:
+            candidates.append((bounds, {"source": "field_evidence"}))
+
+    crops: list[tuple[np.ndarray, tuple[int, int], dict[str, Any]]] = []
+    for bounds, meta in candidates:
+        padding = 32
+        x1 = max(int(bounds[0]) - padding, 0)
+        y1 = max(int(bounds[1]) - padding, 0)
+        x2 = min(int(bounds[2]) + padding, width)
+        y2 = min(int(bounds[3]) + padding, height)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        crops.append((processed_image[y1:y2, x1:x2].copy(), (x1, y1), meta))
+    return crops
+
+
 def retry_crop_for_field(
     processed_image: np.ndarray,
     field: Optional[OCRField],
     field_config: ProfileFieldConfig,
 ) -> Optional[tuple[np.ndarray, tuple[int, int]]]:
-    height, width = processed_image.shape[:2]
-    bounds: Optional[tuple[float, float, float, float]] = None
-
-    region = field_config.retry_region or field_config.anchor_region
-    if region and len(region) == 4:
-        bounds = normalized_region_to_bounds(region, width, height)
-    elif field:
-        bounds = evidence_bounds(field.evidence)
-
-    if not bounds:
+    crops = retry_crops_for_field(processed_image, field, field_config)
+    if not crops:
         return None
-
-    padding = 32
-    x1 = max(int(bounds[0]) - padding, 0)
-    y1 = max(int(bounds[1]) - padding, 0)
-    x2 = min(int(bounds[2]) + padding, width)
-    y2 = min(int(bounds[3]) + padding, height)
-    if x2 <= x1 or y2 <= y1:
-        return None
-
-    return processed_image[y1:y2, x1:x2].copy(), (x1, y1)
+    crop, offset, _ = crops[0]
+    return crop, offset
 
 
 def evidence_bounds(evidence: list[dict[str, Any]]) -> Optional[tuple[float, float, float, float]]:
@@ -1601,7 +1736,29 @@ def value_from_anchor_region(
     field_config: ProfileFieldConfig,
     image: np.ndarray,
 ) -> Optional[dict[str, Any]]:
-    region = field_config.anchor_region or []
+    candidates = [
+        value_from_single_anchor_region(lines, field_config, image, region, index)
+        for index, region in enumerate(field_anchor_regions(field_config))
+    ]
+    candidates = [candidate for candidate in candidates if candidate]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda candidate: (
+            float(candidate.get("confidence", 0.0)),
+            len(str(candidate.get("value") or "")),
+        ),
+    )
+
+
+def value_from_single_anchor_region(
+    lines: list[dict[str, Any]],
+    field_config: ProfileFieldConfig,
+    image: np.ndarray,
+    region: list[float],
+    region_index: int,
+) -> Optional[dict[str, Any]]:
     if len(region) != 4:
         return None
 
@@ -1651,9 +1808,73 @@ def value_from_anchor_region(
         "details": {
             "method": "anchor_region",
             "region": [round(value, 4) for value in region],
+            "region_index": region_index,
             "value_ocr_lines": evidence_lines,
         },
     }
+
+
+def is_region_box(value: Any) -> bool:
+    if not isinstance(value, list) or len(value) != 4:
+        return False
+    try:
+        [float(item) for item in value]
+    except Exception:
+        return False
+    return True
+
+
+def clean_region_box(value: Any) -> Optional[list[float]]:
+    if not is_region_box(value):
+        return None
+    x1, y1, x2, y2 = [float(item) for item in value]
+    if max(abs(item) for item in (x1, y1, x2, y2)) <= 1.0:
+        x1, x2 = sorted((min(max(x1, 0.0), 1.0), min(max(x2, 0.0), 1.0)))
+        y1, y2 = sorted((min(max(y1, 0.0), 1.0), min(max(y2, 0.0), 1.0)))
+    else:
+        x1, x2 = sorted((x1, x2))
+        y1, y2 = sorted((y1, y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+
+
+def configured_region_boxes(value: Any) -> list[list[float]]:
+    if value is None:
+        return []
+    single = clean_region_box(value)
+    if single:
+        return [single]
+    if not isinstance(value, list):
+        return []
+    regions: list[list[float]] = []
+    for item in value:
+        region = clean_region_box(item)
+        if region:
+            regions.append(region)
+    return regions
+
+
+def field_anchor_regions(field_config: ProfileFieldConfig) -> list[list[float]]:
+    return [
+        *configured_region_boxes(field_config.anchor_region),
+        *configured_region_boxes(field_config.anchor_regions),
+    ]
+
+
+def field_retry_regions(field_config: ProfileFieldConfig) -> list[list[float]]:
+    retry_regions = [
+        *configured_region_boxes(field_config.retry_region),
+        *configured_region_boxes(field_config.retry_regions),
+    ]
+    return retry_regions or field_anchor_regions(field_config)
+
+
+def expected_object_regions(expected: ExpectedObjectConfig) -> list[list[float]]:
+    return [
+        *configured_region_boxes(expected.region),
+        *configured_region_boxes(expected.regions),
+    ]
 
 
 def normalized_region_to_bounds(
@@ -3408,12 +3629,967 @@ def save_debug_image(request_id: str, image: np.ndarray) -> None:
 
 
 # ----------------------------
+# Tamper Detection
+# ----------------------------
+
+def empty_tamper_result() -> TamperResult:
+    return TamperResult(
+        tamper_score=0.0,
+        status="genuine",
+        manual_review_required=False,
+        checks={"enabled": False},
+    )
+
+
+def risk_status(score: float, review_threshold: float, reject_threshold: float) -> str:
+    if score >= reject_threshold:
+        return "likely_tampered"
+    if score >= review_threshold:
+        return "suspicious"
+    return "genuine"
+
+
+def flag_score(severity: str, fallback: float = 0.1) -> float:
+    return {
+        "low": 0.08,
+        "medium": 0.16,
+        "high": 0.28,
+        "critical": 0.45,
+    }.get(severity, fallback)
+
+
+def field_evidence_bounds(field: OCRField) -> Optional[tuple[float, float, float, float]]:
+    bounds = evidence_bounds(field.evidence)
+    if bounds:
+        return bounds
+
+    for key in ("value_ocr_line", "ocr_line", "label_ocr_line"):
+        value = field.details.get(key)
+        if isinstance(value, dict):
+            raw_bounds = value.get("bounds") or []
+            if len(raw_bounds) == 4:
+                return tuple(float(item) for item in raw_bounds)
+
+    return None
+
+
+def bounds_center_in_region(
+    bounds: tuple[float, float, float, float],
+    region: list[float],
+    width: int,
+    height: int,
+) -> bool:
+    x1, y1, x2, y2 = normalized_region_to_bounds(region, width, height)
+    bx1, by1, bx2, by2 = bounds
+    mid_x = (bx1 + bx2) / 2
+    mid_y = (by1 + by2) / 2
+    return x1 <= mid_x <= x2 and y1 <= mid_y <= y2
+
+
+def parse_document_date(value: str) -> Optional[tuple[int, int, int]]:
+    ascii_value = translate_configured_digits(value)
+    match = re.search(r"(\d{3,4})[./\-](\d{1,2})[./\-](\d{1,2})", ascii_value)
+    if not match:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    if not (1 <= month <= 12 and 1 <= day <= 32):
+        return None
+    return year, month, day
+
+
+def image_noise_score(gray: np.ndarray) -> float:
+    if gray.size == 0:
+        return 0.0
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    residual = gray.astype("float32") - blurred.astype("float32")
+    return float(np.std(residual))
+
+
+def safe_crop_gray(gray: np.ndarray, bounds: tuple[float, float, float, float], pad: int = 0) -> np.ndarray:
+    height, width = gray.shape[:2]
+    x1, y1, x2, y2 = [int(round(value)) for value in bounds]
+    x1 = max(x1 - pad, 0)
+    y1 = max(y1 - pad, 0)
+    x2 = min(x2 + pad, width)
+    y2 = min(y2 + pad, height)
+    if x2 <= x1 or y2 <= y1:
+        return gray[0:0, 0:0]
+    return gray[y1:y2, x1:x2]
+
+
+def safe_bounds_with_padding(
+    shape: tuple[int, ...],
+    bounds: tuple[float, float, float, float],
+    pad: int,
+) -> tuple[int, int, int, int]:
+    height, width = shape[:2]
+    x1, y1, x2, y2 = [int(round(value)) for value in bounds]
+    return (
+        max(x1 - pad, 0),
+        max(y1 - pad, 0),
+        min(x2 + pad, width),
+        min(y2 + pad, height),
+    )
+
+
+def laplacian_variance(gray: np.ndarray) -> float:
+    if gray.size == 0:
+        return 0.0
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def dark_pixel_ratio(gray: np.ndarray) -> float:
+    if gray.size == 0:
+        return 0.0
+    return float(np.mean(gray < 45))
+
+
+def object_pixel_bounds(obj: dict[str, Any]) -> Optional[tuple[float, float, float, float]]:
+    pixel = ((obj.get("box") or {}).get("pixel") or {})
+    try:
+        x = float(pixel["x"])
+        y = float(pixel["y"])
+        width = float(pixel["width"])
+        height = float(pixel["height"])
+    except Exception:
+        return None
+    return x, y, x + width, y + height
+
+
+def ela_anomaly_score(image_rgb: np.ndarray) -> float:
+    try:
+        image = Image.fromarray(image_rgb)
+        compressed = io.BytesIO()
+        image.save(compressed, format="JPEG", quality=85)
+        compressed.seek(0)
+        recompressed = np.array(Image.open(compressed).convert("RGB"))
+    except Exception:
+        return 0.0
+
+    diff = np.abs(image_rgb.astype("int16") - recompressed.astype("int16"))
+    if diff.size == 0:
+        return 0.0
+    return float(np.percentile(diff, 95))
+
+
+class TamperMLProvider:
+    def __init__(self) -> None:
+        self.yolo_model = None
+        self.face_model = None
+        self.ready = False
+        self.errors: list[str] = []
+
+    def validate(self, require_models: bool) -> None:
+        if not require_models:
+            return
+
+        missing: list[str] = []
+        if not settings.YOLO_MODEL_PATH:
+            missing.append("OCR_YOLO_MODEL_PATH")
+        elif not Path(settings.YOLO_MODEL_PATH).exists():
+            missing.append(f"OCR_YOLO_MODEL_PATH not found: {settings.YOLO_MODEL_PATH}")
+        if not settings.FACE_MODEL_PATH:
+            missing.append("OCR_FACE_MODEL_PATH")
+        elif not Path(settings.FACE_MODEL_PATH).exists():
+            missing.append(f"OCR_FACE_MODEL_PATH not found: {settings.FACE_MODEL_PATH}")
+
+        for module_name in ("ultralytics", "onnxruntime", "insightface"):
+            try:
+                __import__(module_name)
+            except Exception:
+                missing.append(f"missing dependency: {module_name}")
+
+        if settings.FACE_MODEL_PATH and Path(settings.FACE_MODEL_PATH).exists():
+            try:
+                import onnxruntime as ort
+
+                ort.InferenceSession(settings.FACE_MODEL_PATH)
+            except Exception as exc:
+                missing.append(f"OCR_FACE_MODEL_PATH could not be loaded by onnxruntime: {exc}")
+
+        if missing:
+            raise RuntimeError("Tamper production mode is not configured: " + "; ".join(missing))
+
+    def detect(self, image_rgb: np.ndarray) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        detections: list[dict[str, Any]] = []
+        checks = {
+            "provider": "ml",
+            "enabled": bool(settings.YOLO_MODEL_PATH or settings.FACE_MODEL_PATH),
+            "errors": [],
+        }
+        if settings.YOLO_MODEL_PATH:
+            detections.extend(self.detect_yolo(image_rgb, checks))
+        if settings.FACE_MODEL_PATH:
+            checks["face_model_configured"] = True
+        return detections, checks
+
+    def detect_yolo(self, image_rgb: np.ndarray, checks: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            from ultralytics import YOLO
+        except Exception as exc:
+            checks["errors"].append(f"ultralytics unavailable: {exc}")
+            return []
+
+        if self.yolo_model is None:
+            try:
+                self.yolo_model = YOLO(settings.YOLO_MODEL_PATH)
+            except Exception as exc:
+                checks["errors"].append(f"could not load YOLO model: {exc}")
+                return []
+
+        try:
+            results = self.yolo_model.predict(image_rgb, verbose=False)
+        except Exception as exc:
+            checks["errors"].append(f"YOLO inference failed: {exc}")
+            return []
+
+        height, width = image_rgb.shape[:2]
+        detections: list[dict[str, Any]] = []
+        for result in results:
+            names = getattr(result, "names", {}) or {}
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+            for box in boxes:
+                xyxy = getattr(box, "xyxy", None)
+                conf = getattr(box, "conf", None)
+                cls = getattr(box, "cls", None)
+                if xyxy is None:
+                    continue
+                coords = xyxy[0].tolist()
+                class_id = int(cls[0].item()) if cls is not None else -1
+                label = str(names.get(class_id, class_id))
+                confidence = float(conf[0].item()) if conf is not None else 0.0
+                x1, y1, x2, y2 = [float(value) for value in coords]
+                detections.append(
+                    {
+                        "label": label,
+                        "confidence": round(confidence, 4),
+                        "box": detection_box(x1, y1, x2 - x1, y2 - y1, width, height),
+                        "source": "yolo",
+                    }
+                )
+        return detections
+
+
+class TamperDetectionService:
+    _ml_provider: Optional[TamperMLProvider] = None
+
+    def __init__(self) -> None:
+        self.enabled = settings.TAMPER_ENABLED
+        self.mode = settings.TAMPER_MODE
+        self.production = self.mode == "production"
+        self.review_threshold = settings.TAMPER_REVIEW_THRESHOLD
+        self.reject_threshold = settings.TAMPER_REJECT_THRESHOLD
+        if TamperDetectionService._ml_provider is None:
+            TamperDetectionService._ml_provider = TamperMLProvider()
+        self.ml_provider = TamperDetectionService._ml_provider
+
+    def startup_validate(self) -> None:
+        if self.enabled:
+            self.ml_provider.validate(require_models=self.production)
+
+    def analyze(
+        self,
+        image_rgb: np.ndarray,
+        processed_image: np.ndarray,
+        document_type: str,
+        profile: Optional[DocumentProfile],
+        fields: dict[str, OCRField],
+        items: list[dict[str, Any]],
+        objects: list[dict[str, Any]],
+        object_summary: dict[str, Any],
+        page_number: int = 1,
+    ) -> TamperResult:
+        if not self.enabled:
+            return empty_tamper_result()
+
+        review_threshold = (
+            profile.tamper.review_threshold
+            if profile and profile.tamper.review_threshold is not None
+            else self.review_threshold
+        )
+        reject_threshold = (
+            profile.tamper.reject_threshold
+            if profile and profile.tamper.reject_threshold is not None
+            else self.reject_threshold
+        )
+
+        flags: list[TamperFlag] = []
+        checks: dict[str, Any] = {
+            "enabled": True,
+            "mode": self.mode,
+            "page_number": page_number,
+            "document_type": document_type,
+            "ocr_item_count": len(items),
+            "field_count": len(fields),
+            "object_summary": object_summary,
+        }
+
+        flags.extend(self.check_required_fields(profile, fields))
+        flags.extend(self.check_field_validators(profile, fields))
+        flags.extend(self.check_date_consistency(fields))
+        flags.extend(self.check_cross_field_consistency(profile, fields))
+        flags.extend(self.check_layout(profile, fields, processed_image))
+        flags.extend(self.check_expected_objects(profile, objects, image_rgb))
+        flags.extend(self.check_protected_regions(profile, image_rgb))
+        flags.extend(self.check_face_quality(objects, image_rgb))
+        forensic_flags, forensic_checks = self.check_forensics(image_rgb, fields, objects)
+        flags.extend(forensic_flags)
+        checks["forensics"] = forensic_checks
+        ml_flags, ml_checks = self.check_ml(image_rgb, profile, objects)
+        flags.extend(ml_flags)
+        checks["ml"] = ml_checks
+
+        score = self.score_flags(flags, profile)
+        status = risk_status(score, review_threshold, reject_threshold)
+        manual_review_required = status != "genuine" or any(flag.severity in {"high", "critical"} for flag in flags)
+        if manual_review_required and status == "genuine":
+            status = "manual_review"
+
+        checks["thresholds"] = {
+            "review": review_threshold,
+            "reject": reject_threshold,
+        }
+        return TamperResult(
+            tamper_score=round(score, 4),
+            status=status,
+            flags=flags,
+            manual_review_required=manual_review_required,
+            checks=checks,
+        )
+
+    def add_flag(
+        self,
+        code: str,
+        message: str,
+        severity: str,
+        evidence: Optional[dict[str, Any]] = None,
+        score: Optional[float] = None,
+    ) -> TamperFlag:
+        return TamperFlag(
+            code=code,
+            message=message,
+            severity=severity,
+            score=round(score if score is not None else flag_score(severity), 4),
+            evidence=evidence or {},
+        )
+
+    def score_flags(self, flags: list[TamperFlag], profile: Optional[DocumentProfile]) -> float:
+        if not flags:
+            return 0.0
+        weights = profile.tamper.rule_weights if profile else {}
+        total = 0.0
+        for flag in flags:
+            total += max(float(flag.score), float(weights.get(flag.code, 0.0)))
+        return min(total, 1.0)
+
+    def check_required_fields(
+        self,
+        profile: Optional[DocumentProfile],
+        fields: dict[str, OCRField],
+    ) -> list[TamperFlag]:
+        if not profile:
+            return []
+        required = profile.tamper.required_fields
+        return [
+            self.add_flag(
+                "missing_required_field",
+                f"Required field is missing: {field_name}",
+                "medium",
+                {"field": field_name},
+            )
+            for field_name in required
+            if field_name not in fields or not fields[field_name].value
+        ]
+
+    def check_field_validators(
+        self,
+        profile: Optional[DocumentProfile],
+        fields: dict[str, OCRField],
+    ) -> list[TamperFlag]:
+        if not profile:
+            return []
+        flags: list[TamperFlag] = []
+        for field_name, field_config in profile.fields.items():
+            field = fields.get(field_name)
+            if not field:
+                continue
+            if field_config.regex and not re.search(field_config.regex, field.value):
+                required_field = field_name in profile.tamper.required_fields
+                flags.append(
+                    self.add_flag(
+                        "field_regex_failed",
+                        f"Field did not match profile regex: {field_name}",
+                        "high" if required_field else "medium",
+                        {
+                            "field": field_name,
+                            "value": field.value,
+                            "pattern": field_config.regex,
+                            "required": required_field,
+                        },
+                        score=0.35 if required_field else None,
+                    )
+                )
+            for validator in field_config.validators:
+                if validator.type != "regex" or not validator.pattern:
+                    continue
+                if not re.fullmatch(validator.pattern, field.value):
+                    flags.append(
+                        self.add_flag(
+                            "field_validator_failed",
+                            f"Field failed validation: {field_name}",
+                            "medium",
+                            {
+                                "field": field_name,
+                                "value": field.value,
+                                "pattern": validator.pattern,
+                            },
+                        )
+                    )
+        return flags
+
+    def check_date_consistency(self, fields: dict[str, OCRField]) -> list[TamperFlag]:
+        dob = fields.get("date_of_birth")
+        issue = fields.get("issue_date")
+        if not dob or not issue:
+            return []
+        dob_date = parse_document_date(dob.value)
+        issue_date = parse_document_date(issue.value)
+        if not dob_date or not issue_date:
+            return []
+        if dob_date > issue_date:
+            return [
+                self.add_flag(
+                    "date_consistency_failed",
+                    "Date of birth is after issue date",
+                    "high",
+                    {
+                        "date_of_birth": dob.value,
+                        "issue_date": issue.value,
+                    },
+                )
+            ]
+        return []
+
+    def check_cross_field_consistency(
+        self,
+        profile: Optional[DocumentProfile],
+        fields: dict[str, OCRField],
+    ) -> list[TamperFlag]:
+        if not profile:
+            return []
+        flags: list[TamperFlag] = []
+        for field_name, field_config in profile.fields.items():
+            source_name = field_config.same_as_field or field_config.consistency_field
+            if not source_name or field_name not in fields or source_name not in fields:
+                continue
+            similarity = text_similarity(fields[field_name].value, fields[source_name].value)
+            if similarity < 0.65:
+                flags.append(
+                    self.add_flag(
+                        "cross_field_mismatch",
+                        f"Field differs from expected related field: {field_name}",
+                        "medium",
+                        {
+                            "field": field_name,
+                            "value": fields[field_name].value,
+                            "related_field": source_name,
+                            "related_value": fields[source_name].value,
+                            "similarity": round(similarity, 4),
+                        },
+                    )
+                )
+        return flags
+
+    def check_layout(
+        self,
+        profile: Optional[DocumentProfile],
+        fields: dict[str, OCRField],
+        processed_image: np.ndarray,
+    ) -> list[TamperFlag]:
+        if not profile:
+            return []
+        height, width = processed_image.shape[:2]
+        flags: list[TamperFlag] = []
+        for field_name, field in fields.items():
+            field_config = profile.fields.get(field_name)
+            regions = configured_region_boxes(profile.tamper.field_regions.get(field_name))
+            if not regions and field_config:
+                regions = field_anchor_regions(field_config) or field_retry_regions(field_config)
+            if not regions:
+                continue
+            bounds = field_evidence_bounds(field)
+            if not bounds:
+                continue
+            if not any(bounds_center_in_region(bounds, region, width, height) for region in regions):
+                flags.append(
+                    self.add_flag(
+                        "layout_region_mismatch",
+                        f"Field appears outside expected region: {field_name}",
+                        "medium",
+                        {
+                            "field": field_name,
+                            "bounds": list(bounds),
+                            "expected_regions": regions,
+                        },
+                    )
+                )
+        return flags
+
+    def check_expected_objects(
+        self,
+        profile: Optional[DocumentProfile],
+        objects: list[dict[str, Any]],
+        image_rgb: np.ndarray,
+    ) -> list[TamperFlag]:
+        if not profile:
+            return []
+        height, width = image_rgb.shape[:2]
+        flags: list[TamperFlag] = []
+        for expected in profile.tamper.expected_objects:
+            candidates = [
+                obj
+                for obj in objects
+                if obj.get("label") == expected.label
+                and float(obj.get("confidence") or 0.0) >= expected.min_confidence
+            ]
+            if expected.required and not candidates:
+                flags.append(
+                    self.add_flag(
+                        "expected_object_missing",
+                        f"Expected object is missing: {expected.label}",
+                        "high",
+                        {"label": expected.label},
+                    )
+                )
+                continue
+            regions = expected_object_regions(expected)
+            if regions:
+                for obj in candidates:
+                    bounds = object_pixel_bounds(obj)
+                    if bounds and not any(bounds_center_in_region(bounds, region, width, height) for region in regions):
+                        flags.append(
+                            self.add_flag(
+                                "object_region_mismatch",
+                                f"Object appears outside expected region: {expected.label}",
+                                "medium",
+                                {
+                                    "label": expected.label,
+                                    "bounds": list(bounds),
+                                    "expected_regions": regions,
+                                },
+                            )
+                        )
+        return flags
+
+    def check_protected_regions(
+        self,
+        profile: Optional[DocumentProfile],
+        image_rgb: np.ndarray,
+    ) -> list[TamperFlag]:
+        if not profile:
+            return []
+        flags: list[TamperFlag] = []
+        height, width = image_rgb.shape[:2]
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+
+        for name, configured in profile.tamper.protected_regions.items():
+            for region_index, region in enumerate(configured_region_boxes(configured)):
+                x1, y1, x2, y2 = normalized_region_to_bounds(region, width, height)
+                bx1, by1, bx2, by2 = [int(round(value)) for value in (x1, y1, x2, y2)]
+                bx1, by1, bx2, by2 = max(bx1, 0), max(by1, 0), min(bx2, width), min(by2, height)
+                if bx2 <= bx1 or by2 <= by1:
+                    continue
+
+                crop = image_bgr[by1:by2, bx1:bx2]
+                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                edge_density = float(np.mean(cv2.Canny(gray, 80, 180) > 0)) if gray.size else 0.0
+                saturation = float(np.mean(hsv[:, :, 1])) if hsv.size else 0.0
+                blue_ratio = float(
+                    np.mean((hsv[:, :, 0] > 90) & (hsv[:, :, 0] < 135) & (hsv[:, :, 1] > 35))
+                ) if hsv.size else 0.0
+                sharpness = laplacian_variance(gray)
+                evidence = {
+                    "region": name,
+                    "region_index": region_index,
+                    "configured_region": region,
+                    "bounds": [bx1, by1, bx2, by2],
+                    "edge_density": round(edge_density, 4),
+                    "saturation": round(saturation, 4),
+                    "blue_ratio": round(blue_ratio, 4),
+                    "sharpness": round(sharpness, 4),
+                }
+                if name in {"hologram", "stamp", "seal"} and blue_ratio > 0.75 and edge_density < 0.1:
+                    flags.append(
+                        self.add_flag(
+                            "protected_region_color_anomaly",
+                            f"Protected region has a suspicious flat color overlay: {name}",
+                            "high",
+                            evidence,
+                            score=0.3,
+                        )
+                    )
+                elif sharpness < 35 and saturation > 90:
+                    flags.append(
+                        self.add_flag(
+                            "protected_region_texture_anomaly",
+                            f"Protected region has suspicious low texture/high saturation: {name}",
+                            "medium",
+                            evidence,
+                            score=0.22,
+                        )
+                    )
+                elif name in {"photo", "portrait"}:
+                    white_ratio = float(np.mean(gray > 220)) if gray.size else 0.0
+                    dark_ratio = float(np.mean(gray < 45)) if gray.size else 0.0
+                    evidence.update(
+                        {
+                            "white_ratio": round(white_ratio, 4),
+                            "dark_ratio": round(dark_ratio, 4),
+                        }
+                    )
+                    if white_ratio > 0.28 and saturation < 70:
+                        flags.append(
+                            self.add_flag(
+                                "photo_region_background_anomaly",
+                                f"Photo region has a suspicious replacement-style background: {name}",
+                                "high",
+                                evidence,
+                                score=0.28,
+                            )
+                        )
+                    elif sharpness > 350 and edge_density > 0.035:
+                        flags.append(
+                            self.add_flag(
+                                "photo_region_texture_anomaly",
+                                f"Photo region texture differs from the scanned document: {name}",
+                                "medium",
+                                evidence,
+                                score=0.2,
+                            )
+                        )
+        return flags
+
+    def check_face_quality(
+        self,
+        objects: list[dict[str, Any]],
+        image_rgb: np.ndarray,
+    ) -> list[TamperFlag]:
+        faces = [obj for obj in objects if obj.get("label") == "face"]
+        if not faces:
+            return []
+
+        flags: list[TamperFlag] = []
+        large_faces = [
+            face
+            for face in faces
+            if self.face_area_ratio(face, image_rgb) >= 0.015
+        ]
+        if len(large_faces) > 1:
+            flags.append(
+                self.add_flag(
+                    "multiple_faces_detected",
+                    "Multiple faces were detected on the document image",
+                    "medium",
+                    {
+                        "face_count": len(faces),
+                        "large_face_count": len(large_faces),
+                    },
+                )
+            )
+
+        height, width = image_rgb.shape[:2]
+        image_area = max(float(width * height), 1.0)
+        largest_ratio = 0.0
+        for face in faces:
+            bounds = object_pixel_bounds(face)
+            if not bounds:
+                continue
+            x1, y1, x2, y2 = bounds
+            ratio = max((x2 - x1) * (y2 - y1), 0.0) / image_area
+            largest_ratio = max(largest_ratio, ratio)
+        if largest_ratio and largest_ratio < 0.01:
+            flags.append(
+                self.add_flag(
+                    "face_region_too_small",
+                    "Detected face/photo region is too small for reliable review",
+                    "medium",
+                    {"largest_face_area_ratio": round(largest_ratio, 6)},
+                )
+            )
+        return flags
+
+    def face_area_ratio(self, face: dict[str, Any], image_rgb: np.ndarray) -> float:
+        bounds = object_pixel_bounds(face)
+        if not bounds:
+            return 0.0
+        height, width = image_rgb.shape[:2]
+        image_area = max(float(width * height), 1.0)
+        x1, y1, x2, y2 = bounds
+        return max((x2 - x1) * (y2 - y1), 0.0) / image_area
+
+    def check_forensics(
+        self,
+        image_rgb: np.ndarray,
+        fields: dict[str, OCRField],
+        objects: list[dict[str, Any]],
+    ) -> tuple[list[TamperFlag], dict[str, Any]]:
+        flags: list[TamperFlag] = []
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        blur = float(cv2.Laplacian(gray, cv2.CV_64F).var()) if gray.size else 0.0
+        ela = ela_anomaly_score(image_rgb)
+        checks: dict[str, Any] = {
+            "blur_laplacian_variance": round(blur, 4),
+            "ela_p95": round(ela, 4),
+        }
+
+        if blur < 25:
+            flags.append(
+                self.add_flag(
+                    "low_image_sharpness",
+                    "Document image is very blurry",
+                    "low",
+                    {"laplacian_variance": round(blur, 4)},
+                )
+            )
+        if ela > 42:
+            flags.append(
+                self.add_flag(
+                    "jpeg_recompression_anomaly",
+                    "Image has high recompression error variance",
+                    "medium",
+                    {"ela_p95": round(ela, 4)},
+                )
+            )
+
+        text_region_checks, text_region_flags = self.check_text_region_forensics(gray, fields)
+        flags.extend(text_region_flags)
+        checks["text_regions"] = text_region_checks
+
+        region_noise: list[dict[str, Any]] = []
+        for field_name, field in fields.items():
+            bounds = field_evidence_bounds(field)
+            if not bounds:
+                continue
+            crop = safe_crop_gray(gray, bounds, pad=4)
+            if crop.size:
+                region_noise.append(
+                    {
+                        "kind": "field",
+                        "name": field_name,
+                        "noise": image_noise_score(crop),
+                    }
+                )
+        for obj in objects:
+            if obj.get("label") not in {"face", "photo", "portrait"}:
+                continue
+            bounds = object_pixel_bounds(obj)
+            if not bounds:
+                continue
+            crop = safe_crop_gray(gray, bounds, pad=4)
+            if crop.size:
+                noise = image_noise_score(crop)
+                region_noise.append(
+                    {
+                        "kind": "object",
+                        "name": obj.get("label", ""),
+                        "noise": noise,
+                    }
+                )
+                edge_crop = safe_crop_gray(gray, bounds, pad=2)
+                edge_density = float(np.mean(cv2.Canny(edge_crop, 80, 180) > 0)) if edge_crop.size else 0.0
+                if edge_density > 0.22:
+                    flags.append(
+                        self.add_flag(
+                            "pasted_region_edge_anomaly",
+                            "Photo/face region has unusually dense boundary edges",
+                            "medium",
+                            {
+                                "label": obj.get("label"),
+                                "edge_density": round(edge_density, 4),
+                            },
+                        )
+                    )
+
+        if len(region_noise) >= 2:
+            noise_values = [item["noise"] for item in region_noise]
+            median_noise = float(np.median(noise_values))
+            for item in region_noise:
+                delta = abs(float(item["noise"]) - median_noise)
+                if median_noise > 0 and delta / median_noise > 1.4 and delta > 4:
+                    flags.append(
+                        self.add_flag(
+                            "noise_inconsistency",
+                            "Document region has inconsistent noise pattern",
+                            "medium",
+                            {
+                                **item,
+                                "median_noise": round(median_noise, 4),
+                                "delta": round(delta, 4),
+                            },
+                        )
+                    )
+        checks["region_noise"] = [
+            {**item, "noise": round(float(item["noise"]), 4)}
+            for item in region_noise[:20]
+        ]
+        return flags, checks
+
+    def check_text_region_forensics(
+        self,
+        gray: np.ndarray,
+        fields: dict[str, OCRField],
+    ) -> tuple[list[dict[str, Any]], list[TamperFlag]]:
+        checks: list[dict[str, Any]] = []
+        flags: list[TamperFlag] = []
+        for field_name, field in fields.items():
+            bounds = field_evidence_bounds(field)
+            if not bounds:
+                continue
+            x1, y1, x2, y2 = safe_bounds_with_padding(gray.shape, bounds, pad=0)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            ex1, ey1, ex2, ey2 = safe_bounds_with_padding(gray.shape, bounds, pad=28)
+            expanded = gray[ey1:ey2, ex1:ex2]
+            if expanded.size == 0:
+                continue
+
+            mask = np.ones(expanded.shape[:2], dtype=bool)
+            inner_x1 = max(x1 - ex1, 0)
+            inner_y1 = max(y1 - ey1, 0)
+            inner_x2 = min(x2 - ex1, expanded.shape[1])
+            inner_y2 = min(y2 - ey1, expanded.shape[0])
+            mask[inner_y1:inner_y2, inner_x1:inner_x2] = False
+            context = expanded[mask]
+            crop = gray[y1:y2, x1:x2]
+            if crop.size == 0 or context.size < 16:
+                continue
+
+            crop_sharpness = laplacian_variance(crop)
+            context_sharpness = laplacian_variance(context.reshape(-1, 1))
+            crop_dark = dark_pixel_ratio(crop)
+            context_dark = float(np.mean(context < 45))
+            sharpness_ratio = crop_sharpness / max(context_sharpness, 1.0)
+            dark_ratio_delta = crop_dark - context_dark
+            check = {
+                "field": field_name,
+                "bounds": [x1, y1, x2, y2],
+                "sharpness": round(crop_sharpness, 4),
+                "context_sharpness": round(context_sharpness, 4),
+                "sharpness_ratio": round(sharpness_ratio, 4),
+                "dark_pixel_ratio": round(crop_dark, 4),
+                "context_dark_pixel_ratio": round(context_dark, 4),
+                "dark_ratio_delta": round(dark_ratio_delta, 4),
+            }
+            checks.append(check)
+            if sharpness_ratio >= 2.2 and dark_ratio_delta >= 0.025:
+                flags.append(
+                    self.add_flag(
+                        "text_region_style_anomaly",
+                        f"Text region has sharper/darker pixels than its surrounding document area: {field_name}",
+                        "medium",
+                        check,
+                        score=0.22,
+                    )
+                )
+        return checks, flags
+
+    def check_ml(
+        self,
+        image_rgb: np.ndarray,
+        profile: Optional[DocumentProfile],
+        existing_objects: list[dict[str, Any]],
+    ) -> tuple[list[TamperFlag], dict[str, Any]]:
+        try:
+            self.ml_provider.validate(require_models=self.production)
+        except RuntimeError as exc:
+            if self.production:
+                raise
+            return (
+                [
+                    self.add_flag(
+                        "ml_provider_unavailable",
+                        "ML tamper provider is not fully configured",
+                        "low",
+                        {"error": str(exc)},
+                    )
+                ],
+                {"enabled": False, "error": str(exc)},
+            )
+
+        detections, checks = self.ml_provider.detect(image_rgb)
+        checks["detection_count"] = len(detections)
+        labels = {item.get("label") for item in [*existing_objects, *detections]}
+        flags: list[TamperFlag] = []
+        if profile and any(item.label == "face" and item.required for item in profile.tamper.expected_objects):
+            if "face" not in labels and "person" not in labels:
+                flags.append(
+                    self.add_flag(
+                        "face_region_missing",
+                        "Required document face/photo region was not detected",
+                        "high",
+                        {"labels": sorted(str(label) for label in labels if label)},
+                    )
+                )
+        return flags, checks
+
+
+def tamper_response_fields(tamper: TamperResult) -> dict[str, Any]:
+    payload = tamper.model_dump()
+    return {
+        "tamper_score": payload["tamper_score"],
+        "status": payload["status"],
+        "flags": payload["flags"],
+        "manual_review_required": payload["manual_review_required"],
+        "tamper": payload,
+    }
+
+
+def aggregate_tamper_results(results: list[TamperResult]) -> TamperResult:
+    if not results:
+        return empty_tamper_result()
+    worst = max(results, key=lambda result: result.tamper_score)
+    flags: list[TamperFlag] = []
+    for result in results:
+        flags.extend(result.flags)
+    checks = {
+        "pages": [
+            {
+                "page_number": result.checks.get("page_number"),
+                "tamper_score": result.tamper_score,
+                "status": result.status,
+                "flag_count": len(result.flags),
+            }
+            for result in results
+        ],
+        "aggregate_strategy": "max_page_score",
+        "worst_page": worst.checks.get("page_number"),
+    }
+    return TamperResult(
+        tamper_score=worst.tamper_score,
+        status=worst.status,
+        flags=flags,
+        manual_review_required=any(result.manual_review_required for result in results),
+        checks=checks,
+    )
+
+
+# ----------------------------
 # FastAPI App
 # ----------------------------
+
+@asynccontextmanager
+async def app_lifespan(app_instance: FastAPI):
+    TamperDetectionService().startup_validate()
+    yield
+
 
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
+    lifespan=app_lifespan,
 )
 
 
@@ -3532,6 +4708,110 @@ async def admin_render_document_type(request: Request) -> JSONResponse:
         )
 
 
+def process_ocr_page(
+    image_rgb: np.ndarray,
+    page_number: int,
+    lang: Optional[str],
+    document_type: Optional[str],
+    detect_objects: bool,
+    fallback_preprocessing: PreprocessingConfig,
+    accuracy_mode: str,
+    retry: bool,
+) -> dict[str, Any]:
+    (
+        extraction_items,
+        items,
+        resolved_document_type,
+        profile,
+        document_type_confidence,
+        processed,
+        runtime_meta,
+    ) = run_profile_ocr(
+        image_rgb,
+        document_type=document_type,
+        lang=lang,
+        fallback_preprocessing=fallback_preprocessing,
+        accuracy_mode=accuracy_mode,
+        retry=retry,
+    )
+    fields = extract_structured_fields(extraction_items, processed, profile)
+    values = field_values(fields)
+    objects: list[dict[str, Any]] = []
+    object_summary = empty_object_summary()
+    if detect_objects:
+        try:
+            objects, object_summary = ObjectDetectionService().detect(image_rgb, items)
+            for obj in objects:
+                obj["page_number"] = page_number
+        except Exception:
+            logger.exception("Object detection failed")
+            object_summary = empty_object_summary()
+
+    for item in extraction_items:
+        item["page_number"] = page_number
+    for item in items:
+        item["page_number"] = page_number
+
+    tamper = TamperDetectionService().analyze(
+        image_rgb=image_rgb,
+        processed_image=processed,
+        document_type=resolved_document_type,
+        profile=profile,
+        fields=fields,
+        items=items,
+        objects=objects,
+        object_summary=object_summary,
+        page_number=page_number,
+    )
+    runtime_meta["page_number"] = page_number
+    runtime_meta["document_type"] = resolved_document_type
+    runtime_meta["document_type_confidence"] = document_type_confidence
+    return {
+        "page_number": page_number,
+        "image": image_rgb,
+        "processed": processed,
+        "extraction_items": extraction_items,
+        "items": items,
+        "document_type": resolved_document_type,
+        "profile": profile,
+        "document_type_confidence": document_type_confidence,
+        "fields": fields,
+        "values": values,
+        "objects": objects,
+        "object_summary": object_summary,
+        "tamper": tamper,
+        "runtime_meta": runtime_meta,
+    }
+
+
+def merge_page_values(pages: list[dict[str, Any]]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for page in pages:
+        for key, value in page["values"].items():
+            if key not in values and value:
+                values[key] = value
+    return values
+
+
+def merge_page_fields(pages: list[dict[str, Any]]) -> dict[str, OCRField]:
+    fields: dict[str, OCRField] = {}
+    for page in pages:
+        for key, field in page["fields"].items():
+            if key not in fields or field.confidence > fields[key].confidence:
+                fields[key] = field
+    return fields
+
+
+def merge_object_summaries(objects: list[dict[str, Any]]) -> dict[str, Any]:
+    return summarize_objects(objects) if objects else empty_object_summary()
+
+
+def selected_page_result(pages: list[dict[str, Any]]) -> dict[str, Any]:
+    known = [page for page in pages if page["document_type"] != "unknown"]
+    candidates = known or pages
+    return max(candidates, key=lambda page: float(page["document_type_confidence"]))
+
+
 @app.post("/ocr")
 async def ocr_endpoint(
     file: UploadFile = File(...),
@@ -3556,9 +4836,8 @@ async def ocr_endpoint(
 
     data = await file.read()
     validate_upload(file, data)
-
-    image_rgb = load_image(data)
-    original_h, original_w = image_rgb.shape[:2]
+    mime_type = upload_mime_type(file)
+    document_pages = load_document_pages(data, mime_type)
 
     try:
         fallback_preprocessing = PreprocessingConfig(
@@ -3570,50 +4849,81 @@ async def ocr_endpoint(
             clean_background=clean_background,
             max_image_side=1400,
         )
-        (
-            extraction_items,
-            items,
-            resolved_document_type,
-            profile,
-            document_type_confidence,
-            processed,
-            runtime_meta,
-        ) = run_profile_ocr(
-            image_rgb,
-            document_type=document_type,
-            lang=lang,
-            fallback_preprocessing=fallback_preprocessing,
-            accuracy_mode=accuracy_mode,
-            retry=retry,
-        )
+        page_results = [
+            process_ocr_page(
+                image_rgb=page["image"],
+                page_number=page["page_number"],
+                lang=lang,
+                document_type=document_type,
+                detect_objects=detect_objects,
+                fallback_preprocessing=fallback_preprocessing,
+                accuracy_mode=accuracy_mode,
+                retry=retry,
+            )
+            for page in document_pages
+        ]
     except Exception as exc:
         logger.exception("OCR failed")
         raise HTTPException(status_code=500, detail="OCR processing failed") from exc
 
-    save_debug_image(request_id, processed)
+    for page in page_results:
+        suffix = "" if len(page_results) == 1 else f"-page-{page['page_number']}"
+        save_debug_image(f"{request_id}{suffix}", page["processed"])
+
     engine_lang = lang or settings.OCR_LANG
-    fields = extract_structured_fields(extraction_items, processed, profile)
-    values = field_values(fields)
-    objects: list[dict[str, Any]] = []
-    object_summary = empty_object_summary()
-    if detect_objects:
-        try:
-            objects, object_summary = ObjectDetectionService().detect(image_rgb, items)
-        except Exception:
-            logger.exception("Object detection failed")
-            object_summary = empty_object_summary()
+    selected_page = selected_page_result(page_results)
+    resolved_document_type = selected_page["document_type"]
+    document_type_confidence = selected_page["document_type_confidence"]
+    fields = merge_page_fields(page_results)
+    values = merge_page_values(page_results)
+    items = [
+        item
+        for page in page_results
+        for item in page["items"]
+    ]
+    objects = [
+        obj
+        for page in page_results
+        for obj in page["objects"]
+    ]
+    object_summary = merge_object_summaries(objects) if detect_objects else empty_object_summary()
+    tamper = aggregate_tamper_results([page["tamper"] for page in page_results])
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     resource_usage = resource_delta(resource_started)
+    original_w = int(document_pages[0]["width"])
+    original_h = int(document_pages[0]["height"])
+    runtime_meta = {
+        "device": ocr_device(),
+        "gpu": ocr_uses_gpu(),
+        "document_type": resolved_document_type,
+        "document_type_confidence": document_type_confidence,
+        "resource_usage": resource_usage,
+        "page_count": len(page_results),
+        "pages": [
+            {
+                "page_number": page["page_number"],
+                "document_type": page["document_type"],
+                "document_type_confidence": page["document_type_confidence"],
+                "field_count": len(page["fields"]),
+                "ocr_item_count": len(page["items"]),
+                "tamper_score": page["tamper"].tamper_score,
+                "status": page["tamper"].status,
+            }
+            for page in page_results
+        ],
+    }
     runtime_meta["device"] = ocr_device()
     runtime_meta["gpu"] = ocr_uses_gpu()
     runtime_meta["document_type"] = resolved_document_type
     runtime_meta["document_type_confidence"] = document_type_confidence
     runtime_meta["resource_usage"] = resource_usage
+    tamper_fields = tamper_response_fields(tamper)
 
     if values_only:
         meta = {
             "document_type": resolved_document_type,
             "document_type_confidence": document_type_confidence,
+            "page_count": len(page_results),
         }
         if detect_objects:
             meta["object_summary"] = object_summary
@@ -3632,6 +4942,7 @@ async def ocr_endpoint(
                 "values": values,
                 "objects": objects,
                 "object_summary": object_summary,
+                **tamper_fields,
                 "meta": meta,
             }
         )
@@ -3651,6 +4962,7 @@ async def ocr_endpoint(
                 },
                 "objects": objects,
                 "object_summary": object_summary,
+                **tamper_fields,
                 "meta": runtime_meta,
             }
         )
@@ -3658,7 +4970,7 @@ async def ocr_endpoint(
     response = OCRResponse(
         request_id=request_id,
         filename=file.filename or "unknown",
-        mime_type=file.content_type or "unknown",
+        mime_type=mime_type,
         file_size_bytes=len(data),
         width=original_w,
         height=original_h,
@@ -3671,6 +4983,11 @@ async def ocr_endpoint(
         items=items,
         objects=objects,
         object_summary=object_summary,
+        tamper_score=tamper.tamper_score,
+        status=tamper.status,
+        flags=[flag.model_dump() for flag in tamper.flags],
+        manual_review_required=tamper.manual_review_required,
+        tamper=tamper.model_dump(),
         meta={
             "engine": "paddleocr",
             "lang": engine_lang,
@@ -3772,9 +5089,44 @@ def run_cli(
         )
 
     fields = extract_structured_fields(extraction_items, processed, profile)
+    values = field_values(fields)
+    objects: list[dict[str, Any]] = []
+    object_summary = empty_object_summary()
+    try:
+        objects, object_summary = ObjectDetectionService().detect(image_rgb, items)
+    except Exception:
+        logger.exception("Object detection failed")
+        object_summary = empty_object_summary()
+    tamper = TamperDetectionService().analyze(
+        image_rgb=image_rgb,
+        processed_image=processed,
+        document_type=resolved_document_type,
+        profile=profile,
+        fields=fields,
+        items=items,
+        objects=objects,
+        object_summary=object_summary,
+    )
+    tamper_fields = tamper_response_fields(tamper)
 
     if values_only:
-        print(json.dumps(field_values(fields), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "document_type": resolved_document_type,
+                    "values": values,
+                    "objects": objects,
+                    "object_summary": object_summary,
+                    **tamper_fields,
+                    "meta": {
+                        "document_type": resolved_document_type,
+                        "document_type_confidence": document_type_confidence,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
 
     if json_output or fields_only:
@@ -3783,7 +5135,10 @@ def run_cli(
             "lang": lang or settings.OCR_LANG,
             "document_type": resolved_document_type,
             "document_type_confidence": document_type_confidence,
-            "values": field_values(fields),
+            "values": values,
+            "objects": objects,
+            "object_summary": object_summary,
+            **tamper_fields,
             "meta": runtime_meta,
             "fields": {
                 name: field.model_dump()

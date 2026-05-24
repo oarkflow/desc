@@ -5,6 +5,43 @@ detect:
   - text: Government of Nepal
   - text: राष्ट्रिय परिचयपत्र
   min_score: 1
+tamper:
+  required_fields:
+  - nid_number
+  - full_name
+  - date_of_birth
+  - issue_date
+  field_regions:
+    surname:
+    - 0.27
+    - 0.27
+    - 0.5
+    - 0.34
+    given_name:
+    - 0.27
+    - 0.48
+    - 0.54
+    - 0.55
+    nationality:
+    - 0.03
+    - 0.22
+    - 0.18
+    - 0.28
+  expected_objects:
+  - label: face
+    required: true
+    min_confidence: 0.5
+  rule_weights:
+    missing_required_field: 0.18
+    field_regex_failed: 0.18
+    field_validator_failed: 0.18
+    date_consistency_failed: 0.35
+    layout_region_mismatch: 0.2
+    expected_object_missing: 0.3
+    noise_inconsistency: 0.22
+    pasted_region_edge_anomaly: 0.24
+  review_threshold: 0.35
+  reject_threshold: 0.7
 ocr:
   timeout_seconds: 8
   max_passes: 3

@@ -58,6 +58,9 @@ func (g *gateway) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin", g.adminPage)
 	mux.HandleFunc("GET /admin/", g.adminPage)
 	mux.HandleFunc("GET /admin/static/{name}", g.adminStatic)
+	mux.HandleFunc("GET /region-editor", g.regionEditorPage)
+	mux.HandleFunc("GET /region-editor/", g.regionEditorPage)
+	mux.HandleFunc("GET /region-editor/static/{name}", g.adminStatic)
 	mux.HandleFunc("GET /admin/api/config", g.adminAPI(g.adminConfig))
 	mux.HandleFunc("GET /admin/api/document-types", g.adminAPI(g.adminListDocumentTypes))
 	mux.HandleFunc("POST /admin/api/document-types", g.adminAPI(g.adminCreateDocumentType))
@@ -97,7 +100,7 @@ func (g *gateway) adminPage(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{
 			Name:     "kyc_gateway_api_key",
 			Value:    key,
-			Path:     "/admin",
+			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
@@ -105,6 +108,30 @@ func (g *gateway) adminPage(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFS(adminFS, "templates/admin.html")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "admin template unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = tmpl.Execute(w, adminPageData{APIKeyConfigured: g.cfg.apiKey != "", DefaultAPIKey: ""})
+}
+
+func (g *gateway) regionEditorPage(w http.ResponseWriter, r *http.Request) {
+	if !g.authorized(r) {
+		g.metrics.authFailuresTotal.Add(1)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if key := r.URL.Query().Get("api_key"); key != "" && g.cfg.apiKey != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "kyc_gateway_api_key",
+			Value:    key,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
+	tmpl, err := template.ParseFS(adminFS, "templates/region_editor.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "region editor template unavailable")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

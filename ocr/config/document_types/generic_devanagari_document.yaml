@@ -2,6 +2,15 @@ document_type: generic_devanagari_document
 detect:
   cues: []
   min_score: 1
+tamper:
+  rule_weights:
+    field_regex_failed: 0.12
+    field_validator_failed: 0.12
+    low_image_sharpness: 0.08
+    jpeg_recompression_anomaly: 0.16
+    noise_inconsistency: 0.18
+  review_threshold: 0.4
+  reject_threshold: 0.75
 ocr:
   timeout_seconds: 8
   max_passes: 3

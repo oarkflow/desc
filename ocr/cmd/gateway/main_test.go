@@ -141,6 +141,44 @@ func TestAdminRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestRegionEditorRequiresAPIKey(t *testing.T) {
+	gw := testGateway(t, "secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/region-editor", nil)
+	rec := httptest.NewRecorder()
+
+	gw.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestRegionEditorPageAndStaticServedWithAuth(t *testing.T) {
+	gw := testGateway(t, "secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	pageReq := httptest.NewRequest(http.MethodGet, "/region-editor", nil)
+	pageReq.Header.Set("X-API-Key", "secret")
+	pageRec := httptest.NewRecorder()
+	gw.routes().ServeHTTP(pageRec, pageReq)
+	if pageRec.Code != http.StatusOK {
+		t.Fatalf("page status = %d, body = %s", pageRec.Code, pageRec.Body.String())
+	}
+	if !strings.Contains(pageRec.Body.String(), "OCR Region Editor") {
+		t.Fatalf("page did not render region editor: %s", pageRec.Body.String())
+	}
+
+	staticReq := httptest.NewRequest(http.MethodGet, "/region-editor/static/region-editor.js", nil)
+	staticReq.Header.Set("X-API-Key", "secret")
+	staticRec := httptest.NewRecorder()
+	gw.routes().ServeHTTP(staticRec, staticReq)
+	if staticRec.Code != http.StatusOK {
+		t.Fatalf("static status = %d, body = %s", staticRec.Code, staticRec.Body.String())
+	}
+	if !strings.Contains(staticRec.Body.String(), "saveProfile") {
+		t.Fatalf("static asset did not contain editor code")
+	}
+}
+
 func TestAdminDocumentTypeSaveCreatesBackupAndReloads(t *testing.T) {
 	var reloads int
 	gw := testAdminGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

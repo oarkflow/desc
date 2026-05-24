@@ -8,7 +8,7 @@ By default Docker Compose exposes the gateway on `http://localhost:8000` and kee
 
 - Docker and Docker Compose for the recommended runtime.
 - A configured `GATEWAY_API_KEY` for protected deployments.
-- Input files must be images accepted by the OCR service, sent as `multipart/form-data`.
+- Input files must be images or PDFs accepted by the OCR service, sent as `multipart/form-data`.
 - Default maximum request body size is `15 MB`, controlled by `OCR_MAX_FILE_MB`.
 - CPU mode works by default. GPU mode requires a Docker runtime with GPU support and the `docker-compose.gpu.yml` override.
 
@@ -50,6 +50,10 @@ The UI can:
 - Upload a document preview through multipart form upload and view OCR JSON plus image overlays.
 - Validate YAML through the OCR service before saving.
 - Save files atomically with timestamped backups and request OCR config reloads.
+
+### `GET /region-editor`
+
+Serves the gateway-hosted document region editor. Upload an image, draw normalized field/photo/logo/hologram/stamp/signature/object regions, run an OCR overlay, and save the generated multi-region config back to the selected document type through the same validated admin API.
 
 ### `GET /healthz`
 
@@ -107,7 +111,7 @@ Headers:
 
 Multipart fields:
 
-- `file`: required image upload.
+- `file`: required image or PDF upload. PDFs are rasterized page-by-page and capped by `OCR_MAX_PDF_PAGES`.
 
 Query parameters forwarded to the OCR service:
 
@@ -151,9 +155,34 @@ Default `values_only=true` response:
   "values": {
     "nid_number": "123-456-7890"
   },
+  "tamper_score": 0.18,
+  "status": "suspicious",
+  "flags": [
+    {
+      "code": "expected_object_missing",
+      "message": "Expected object is missing: face",
+      "severity": "high",
+      "score": 0.3,
+      "evidence": {
+        "label": "face"
+      }
+    }
+  ],
+  "manual_review_required": true,
+  "tamper": {
+    "tamper_score": 0.18,
+    "status": "suspicious",
+    "flags": [],
+    "manual_review_required": true,
+    "checks": {
+      "aggregate_strategy": "max_page_score",
+      "worst_page": 1
+    }
+  },
   "meta": {
     "document_type": "nepali_national_id",
-    "document_type_confidence": 0.3333
+    "document_type_confidence": 0.3333,
+    "page_count": 1
   }
 }
 ```
@@ -166,9 +195,24 @@ Default `values_only=true` response:
   "values": {
     "nid_number": "123-456-7890"
   },
+  "tamper_score": 0,
+  "status": "genuine",
+  "flags": [],
+  "manual_review_required": false,
+  "tamper": {
+    "tamper_score": 0,
+    "status": "genuine",
+    "flags": [],
+    "manual_review_required": false,
+    "checks": {
+      "aggregate_strategy": "max_page_score",
+      "worst_page": 1
+    }
+  },
   "meta": {
     "document_type": "nepali_national_id",
     "document_type_confidence": 0.3333,
+    "page_count": 1,
     "device": "cpu",
     "gpu": false,
     "processing_ms": 1200,
@@ -194,6 +238,10 @@ Default `values_only=true` response:
   "processing_ms": 1200,
   "document_type": "nepali_national_id",
   "document_type_confidence": 0.3333,
+  "tamper_score": 0.18,
+  "status": "suspicious",
+  "flags": [],
+  "manual_review_required": true,
   "full_text": "recognized text",
   "values": {
     "nid_number": "123-456-7890"
@@ -218,6 +266,16 @@ Default `values_only=true` response:
       "source_pass": "english"
     }
   ],
+  "tamper": {
+    "tamper_score": 0.18,
+    "status": "suspicious",
+    "flags": [],
+    "manual_review_required": true,
+    "checks": {
+      "aggregate_strategy": "max_page_score",
+      "worst_page": 1
+    }
+  },
   "meta": {
     "engine": "paddleocr",
     "lang": "ne",
@@ -255,6 +313,7 @@ Common gateway statuses:
 | `401` | `GATEWAY_API_KEY` is set and `X-API-Key` is missing or incorrect. |
 | `404` | Unknown route. |
 | `413` | Request body is larger than `OCR_MAX_FILE_MB`. |
+| `413` | PDF has more pages than `OCR_MAX_PDF_PAGES`. |
 | `429` | OCR concurrency and queue are full. |
 | `502` | Gateway could not create or complete an upstream OCR request. |
 | `504` | Upstream OCR request timed out. |
@@ -282,6 +341,8 @@ All admin API routes are under `/admin/api` and require the same gateway API key
 | `POST /admin/api/preview` | Multipart preview upload; forwards `file` and OCR options to upstream `/ocr`. |
 | `POST /admin/api/reload` | Request OCR config/data cache reload. |
 
+Document type YAML supports both single regions and multi-region lists. Existing keys such as `anchor_region`, `retry_region`, `tamper.field_regions.<field>`, `tamper.protected_regions.<name>`, and `tamper.expected_objects[].region` remain valid. For variants that need several allowed boxes, use `anchor_regions`, `retry_regions`, list values under tamper field/protected regions, and `tamper.expected_objects[].regions`.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -301,6 +362,13 @@ All admin API routes are under `/admin/api` and require the same gateway API key
 | `GATEWAY_DEFAULT_ACCURACY_MODE` | `accurate` | Injected `accuracy_mode` query value when the client omits it. Use `fast` for lower-latency deployments. |
 | `GATEWAY_DEFAULT_RETRY` | `true` | Injected `retry` query value when the client omits it. Use `false` for lower-latency deployments. |
 | `OCR_MAX_FILE_MB` | `15` | Maximum gateway request body size and OCR upload size. |
+| `OCR_TAMPER_ENABLED` | `true` | Enables tamper/risk scoring in OCR responses. |
+| `OCR_TAMPER_MODE` | `standard` | Use `production` to require configured ML model paths at service startup. |
+| `OCR_MAX_PDF_PAGES` | `5` | Maximum PDF pages rasterized per OCR request. |
+| `OCR_YOLO_MODEL_PATH` | empty | Optional YOLO model path for document/photo/stamp/signature/seal detection. In Compose, place models under `ocr/models` and use `/app/models/<file>`. |
+| `OCR_FACE_MODEL_PATH` | empty | Optional ONNX face model path validated by ONNX Runtime in production tamper mode. |
+| `OCR_TAMPER_REVIEW_THRESHOLD` | `0.35` | Default score at or above which the response status becomes `suspicious`. |
+| `OCR_TAMPER_REJECT_THRESHOLD` | `0.70` | Default score at or above which the response status becomes `likely_tampered`. |
 
 OCR service settings are configured on the `ocr` Compose service. Common values include `OCR_WORKERS`, `OCR_LOG_LEVEL`, `OCR_KEEP_ALIVE`, `OCR_DEVICE`, `OCR_USE_GPU`, `OCR_GPU_ID`, and `OCR_CACHE_DIR`.
 
@@ -311,5 +379,7 @@ OCR service settings are configured on the `ocr` Compose service. Common values 
 - For a faster optional profile, set `GATEWAY_DEFAULT_ACCURACY_MODE=fast` and `GATEWAY_DEFAULT_RETRY=false`.
 - Upstream routing is round-robin when `GATEWAY_OCR_UPSTREAMS` contains more than one URL.
 - The gateway forwards `Content-Type`, `Accept`, and `User-Agent` request headers.
+- Tamper detection is a risk scoring layer, not a final yes/no verdict. Automatically approve only clean cases and send suspicious or likely-tampered cases to review.
+- Production tamper mode requires `OCR_YOLO_MODEL_PATH` and `OCR_FACE_MODEL_PATH` to point at mounted model files; the service fails startup when they are missing or invalid.
 - Do not expose the OCR service port directly in production; route traffic through the gateway.
 - Set `GATEWAY_MAX_ACTIVE` close to the number of OCR workers or available GPU/CPU capacity to avoid overloading the OCR service.
