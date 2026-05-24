@@ -129,19 +129,21 @@ def upload_document(session_id):
     try:
         applicant_session(session_id)
         data, filename, content_type = uploaded_bytes()
-        document_type = request.form.get("document_type") or request.args.get("document_type")
+        selected_document_type = request.form.get("document_type") or request.args.get("document_type")
         side = request.form.get("side") or request.args.get("side", "front")
         file_info = storage.save_bytes(session_id, "documents", filename, data)
         try:
             gateway_result = ocr_gateway.extract(
                 file_info["path"],
-                document_type=document_type,
                 content_type=content_type,
                 filename=file_info["filename"],
             )
         except ValueError as error:
             gateway_result = {"engine": "http_gateway", "error": str(error), "response": {}}
+        document_type = ocr_mapper.resolve_document_type(gateway_result, fallback=selected_document_type)
         suggested_profile = ocr_mapper.map(gateway_result, document_type=document_type)
+        if side not in DOCUMENT_TYPES.get(document_type, {}).get("sides", []):
+            side = "front"
         repo.add_document(session_id, document_type, side, file_info, content_type, gateway_result)
         face_match_service.enroll_source(session_id, "document", file_info["path"], source_id=side)
         return jsonify({"document": file_info, "gateway": gateway_result, "suggested_profile": suggested_profile, "verification": verification_summary(repo.get_case(session_id))})

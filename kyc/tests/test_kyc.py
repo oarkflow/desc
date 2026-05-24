@@ -173,6 +173,7 @@ class OCRProfileMapperTests(unittest.TestCase):
         suggested = mapper.map(
             {
                 "response": {
+                    "document_type": "nepali_national_id",
                     "values": {
                         "name": "Test Applicant",
                         "dob": "1990-01-01",
@@ -188,6 +189,12 @@ class OCRProfileMapperTests(unittest.TestCase):
         self.assertEqual(suggested["date_of_birth"], "1990-01-01")
         self.assertEqual(suggested["document_number"], "P1234567")
         self.assertEqual(suggested["expiry_date"], "2030-01-01")
+        self.assertEqual(suggested["document_type"], "national_id")
+
+    def test_falls_back_to_selected_document_type_when_ocr_type_is_unknown(self):
+        mapper = OCRProfileMapper()
+        suggested = mapper.map({"response": {"document_type": "unknown", "values": {}}}, document_type="passport")
+
         self.assertEqual(suggested["document_type"], "passport")
 
 
@@ -200,7 +207,7 @@ class OCRGatewayClientTests(unittest.TestCase):
             response.ok = True
             response.status_code = 200
             response.headers = {"content-type": "application/json"}
-            response.json.return_value = {"values": {"passport_number": "P1"}}
+            response.json.return_value = {"document_type": "passport", "values": {"passport_number": "P1"}}
 
             with mock.patch("requests.post", return_value=response) as post:
                 client = OCRGatewayClient(base_url="http://ocr.test")
@@ -210,7 +217,8 @@ class OCRGatewayClientTests(unittest.TestCase):
             uploaded = kwargs["files"]["file"]
             self.assertEqual(uploaded[0], "passport.jpg")
             self.assertEqual(uploaded[2], "image/jpeg")
-            self.assertEqual(kwargs["params"]["values_only"], "true")
+            self.assertEqual(kwargs["params"]["values_only"], "false")
+            self.assertEqual(kwargs["params"]["fields_only"], "true")
             self.assertNotIn("document_type", kwargs["params"])
 
     def test_can_opt_into_forwarding_document_type(self):
@@ -221,7 +229,7 @@ class OCRGatewayClientTests(unittest.TestCase):
             response.ok = True
             response.status_code = 200
             response.headers = {"content-type": "application/json"}
-            response.json.return_value = {"values": {"passport_number": "P1"}}
+            response.json.return_value = {"document_type": "passport", "values": {"passport_number": "P1"}}
 
             with mock.patch.dict("os.environ", {"OCR_GATEWAY_SEND_DOCUMENT_TYPE": "true"}):
                 with mock.patch("requests.post", return_value=response) as post:

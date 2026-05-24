@@ -725,7 +725,7 @@ class OCRGatewayClient:
         path = Path(image_path)
         upload_name = filename or path.name
         upload_content_type = content_type or mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
-        params = {"values_only": "true"}
+        params = {"values_only": "false", "fields_only": "true"}
         if document_type and self.send_document_type:
             params["document_type"] = document_type
         headers = {"Accept": "application/json"}
@@ -766,6 +766,17 @@ class OCRGatewayClient:
 
 
 class OCRProfileMapper:
+    DOCUMENT_TYPE_ALIASES = {
+        "nepali_national_id": "national_id",
+        "nepali_citizenship_front_back": "national_id",
+        "nepali_citizenship_mixed_language": "national_id",
+        "nepali_citizenship_old_front": "national_id",
+        "generic_devanagari_document": "other_government_id",
+        "passport": "passport",
+        "driving_license": "driving_license",
+        "voter_id": "voter_id",
+        "national_id": "national_id",
+    }
     FIELD_ALIASES = {
         "full_name": ["full_name", "name", "given_name", "applicant_name"],
         "date_of_birth": ["date_of_birth", "dob", "birth_date"],
@@ -784,9 +795,28 @@ class OCRProfileMapper:
             value = self.first_value(values, aliases)
             if value:
                 suggested[profile_field] = str(value).strip()
-        if document_type:
-            suggested["document_type"] = document_type
+        resolved_document_type = self.resolve_document_type(gateway_result, fallback=document_type)
+        if resolved_document_type:
+            suggested["document_type"] = resolved_document_type
         return suggested
+
+    def resolve_document_type(self, gateway_result, fallback=None):
+        response = gateway_result.get("response", {}) if isinstance(gateway_result, dict) else {}
+        detected = None
+        if isinstance(response, dict):
+            detected = response.get("document_type")
+            meta = response.get("meta")
+            if not detected and isinstance(meta, dict):
+                detected = meta.get("document_type")
+        return self.normalize_document_type(detected) or self.normalize_document_type(fallback)
+
+    def normalize_document_type(self, document_type):
+        if not document_type:
+            return None
+        document_type = str(document_type).strip()
+        if not document_type or document_type == "unknown":
+            return None
+        return self.DOCUMENT_TYPE_ALIASES.get(document_type, document_type if document_type in DOCUMENT_TYPES else None)
 
     def extract_values(self, body):
         if not isinstance(body, dict):

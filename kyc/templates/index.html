@@ -331,6 +331,9 @@
             gatewayResultEl.textContent = 'Sending document to OCR Gateway...';
             const data = await api(`/api/kyc/sessions/${sessionId}/documents`, { method: 'POST', body: form });
             fillProfile(data.suggested_profile);
+            if (data.suggested_profile.document_type) {
+                document.getElementById('documentType').value = data.suggested_profile.document_type;
+            }
             setStatus(data.verification);
             gatewayResultEl.textContent = JSON.stringify({ side, suggested_profile: data.suggested_profile, gateway: data.gateway }, null, 2);
         }

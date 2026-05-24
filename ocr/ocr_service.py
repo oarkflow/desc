@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import mimetypes
 import os
 import re
 import resource
@@ -645,11 +646,20 @@ ALLOWED_MIME_TYPES = {
 }
 
 
+def upload_mime_type(file: UploadFile) -> str:
+    content_type = (file.content_type or "").lower()
+    if content_type in ALLOWED_MIME_TYPES:
+        return content_type
+    guessed_type = mimetypes.guess_type(file.filename or "")[0]
+    return (guessed_type or content_type or "unknown").lower()
+
+
 def validate_upload(file: UploadFile, data: bytes) -> None:
-    if file.content_type not in ALLOWED_MIME_TYPES:
+    mime_type = upload_mime_type(file)
+    if mime_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=415,
-            detail=f"Unsupported file type: {file.content_type}",
+            detail=f"Unsupported file type: {file.content_type or 'unknown'}",
         )
 
     max_bytes = settings.MAX_FILE_MB * 1024 * 1024
@@ -3389,19 +3399,26 @@ async def ocr_endpoint(
     runtime_meta["resource_usage"] = resource_usage
 
     if values_only:
+        meta = {
+            "document_type": resolved_document_type,
+            "document_type_confidence": document_type_confidence,
+        }
         if include_stats:
-            return JSONResponse(
+            meta.update(
                 {
-                    "values": values,
-                    "meta": {
-                        "device": ocr_device(),
-                        "gpu": ocr_uses_gpu(),
-                        "processing_ms": elapsed_ms,
-                        "resource_usage": resource_usage,
-                    },
+                    "device": ocr_device(),
+                    "gpu": ocr_uses_gpu(),
+                    "processing_ms": elapsed_ms,
+                    "resource_usage": resource_usage,
                 }
             )
-        return JSONResponse(values)
+        return JSONResponse(
+            {
+                "document_type": resolved_document_type,
+                "values": values,
+                "meta": meta,
+            }
+        )
 
     if fields_only:
         return JSONResponse(
