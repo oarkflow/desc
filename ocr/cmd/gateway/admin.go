@@ -60,7 +60,6 @@ func (g *gateway) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/static/{name}", g.adminStatic)
 	mux.HandleFunc("GET /region-editor", g.regionEditorPage)
 	mux.HandleFunc("GET /region-editor/", g.regionEditorPage)
-	mux.HandleFunc("GET /region-editor/static/{name}", g.adminStatic)
 	mux.HandleFunc("GET /admin/api/config", g.adminAPI(g.adminConfig))
 	mux.HandleFunc("GET /admin/api/document-types", g.adminAPI(g.adminListDocumentTypes))
 	mux.HandleFunc("POST /admin/api/document-types", g.adminAPI(g.adminCreateDocumentType))
@@ -129,13 +128,7 @@ func (g *gateway) regionEditorPage(w http.ResponseWriter, r *http.Request) {
 			SameSite: http.SameSiteLaxMode,
 		})
 	}
-	tmpl, err := template.ParseFS(adminFS, "templates/region_editor.html")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "region editor template unavailable")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = tmpl.Execute(w, adminPageData{APIKeyConfigured: g.cfg.apiKey != "", DefaultAPIKey: ""})
+	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
 func (g *gateway) adminStatic(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +445,8 @@ func (g *gateway) validateUpstream(w http.ResponseWriter, r *http.Request, path,
 }
 
 func (g *gateway) proxyAdminBody(w http.ResponseWriter, r *http.Request, path, contentType string, body []byte) {
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, g.upstreamURLWithPath(path).String(), bytes.NewReader(body))
+	target := g.upstreamURLWithPath(path)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "failed to create upstream request")
 		return
@@ -460,7 +454,7 @@ func (g *gateway) proxyAdminBody(w http.ResponseWriter, r *http.Request, path, c
 	req.Header.Set("Content-Type", contentType)
 	resp, err := g.client.Do(req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "admin upstream unavailable")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("admin upstream unavailable: %s (%v)", target.Redacted(), err))
 		return
 	}
 	defer resp.Body.Close()

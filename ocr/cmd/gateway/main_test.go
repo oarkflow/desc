@@ -153,29 +153,18 @@ func TestRegionEditorRequiresAPIKey(t *testing.T) {
 	}
 }
 
-func TestRegionEditorPageAndStaticServedWithAuth(t *testing.T) {
+func TestRegionEditorRedirectsToAdminWithAuth(t *testing.T) {
 	gw := testGateway(t, "secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	pageReq := httptest.NewRequest(http.MethodGet, "/region-editor", nil)
 	pageReq.Header.Set("X-API-Key", "secret")
 	pageRec := httptest.NewRecorder()
 	gw.routes().ServeHTTP(pageRec, pageReq)
-	if pageRec.Code != http.StatusOK {
+	if pageRec.Code != http.StatusFound {
 		t.Fatalf("page status = %d, body = %s", pageRec.Code, pageRec.Body.String())
 	}
-	if !strings.Contains(pageRec.Body.String(), "OCR Region Editor") {
-		t.Fatalf("page did not render region editor: %s", pageRec.Body.String())
-	}
-
-	staticReq := httptest.NewRequest(http.MethodGet, "/region-editor/static/region-editor.js", nil)
-	staticReq.Header.Set("X-API-Key", "secret")
-	staticRec := httptest.NewRecorder()
-	gw.routes().ServeHTTP(staticRec, staticReq)
-	if staticRec.Code != http.StatusOK {
-		t.Fatalf("static status = %d, body = %s", staticRec.Code, staticRec.Body.String())
-	}
-	if !strings.Contains(staticRec.Body.String(), "saveProfile") {
-		t.Fatalf("static asset did not contain editor code")
+	if pageRec.Header().Get("Location") != "/admin" {
+		t.Fatalf("redirect = %q, want /admin", pageRec.Header().Get("Location"))
 	}
 }
 

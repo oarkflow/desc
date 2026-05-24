@@ -51,9 +51,9 @@ The UI can:
 - Validate YAML through the OCR service before saving.
 - Save files atomically with timestamped backups and request OCR config reloads.
 
-### `GET /region-editor`
+The Document types editor includes a Regions section. Upload or drop an image, draw normalized field/photo/logo/hologram/stamp/signature/object regions, run an OCR overlay, and save the generated multi-region config with the same document type YAML.
 
-Serves the gateway-hosted document region editor. Upload an image, draw normalized field/photo/logo/hologram/stamp/signature/object regions, run an OCR overlay, and save the generated multi-region config back to the selected document type through the same validated admin API.
+`GET /region-editor` redirects to `/admin` for compatibility with older links.
 
 ### `GET /healthz`
 
@@ -348,7 +348,7 @@ Document type YAML supports both single regions and multi-region lists. Existing
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GATEWAY_PORT` | `8000` | Gateway listen port inside the container. Compose maps `${GATEWAY_PORT:-8000}` on the host to container port `8000`. |
-| `GATEWAY_OCR_UPSTREAM` | `http://ocr:8000` | Single upstream OCR service URL. |
+| `GATEWAY_OCR_UPSTREAM` | `http://127.0.0.1:8001` | Single upstream OCR service URL. Docker Compose overrides this to `http://ocr:8000` inside the Compose network. |
 | `GATEWAY_OCR_UPSTREAMS` | value of `GATEWAY_OCR_UPSTREAM` | Comma-separated upstream OCR service URLs for round-robin routing. |
 | `GATEWAY_API_KEY` | empty | Enables API-key auth when set. Requests must send `X-API-Key`. |
 | `GATEWAY_CONFIG_DIR` | `config` | Directory containing `document_profiles.yaml` and `document_types`. |

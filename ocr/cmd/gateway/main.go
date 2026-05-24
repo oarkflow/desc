@@ -91,7 +91,7 @@ func main() {
 }
 
 func loadConfig() (config, error) {
-	upstreams, err := parseUpstreams(envString("GATEWAY_OCR_UPSTREAMS", envString("GATEWAY_OCR_UPSTREAM", "http://ocr:8000")))
+	upstreams, err := parseUpstreams(envString("GATEWAY_OCR_UPSTREAMS", envString("GATEWAY_OCR_UPSTREAM", "http://127.0.0.1:8001")))
 	if err != nil {
 		return config{}, err
 	}

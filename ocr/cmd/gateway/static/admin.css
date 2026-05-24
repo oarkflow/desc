@@ -342,14 +342,139 @@ label, .control { display: grid; gap: 5px; color: var(--muted); font-size: 12px;
 #previewImage { display: block; width: 100%; height: auto; }
 #previewCanvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .result-box { margin: 0; min-height: 320px; max-height: 620px; overflow: auto; background: #101828; color: #e4e7ec; border-radius: 6px; padding: 12px; font-size: 12px; }
+.result-box.compact { min-height: 160px; max-height: 240px; }
+
+.region-editor { grid-column: 1 / -1; }
+.region-workbench {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) 340px;
+  gap: 12px;
+  align-items: start;
+}
+.region-canvas-panel, .region-side, .region-block {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.region-canvas-wrap {
+  position: relative;
+  min-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #e8edf2;
+}
+.region-canvas-wrap.is-dragover { outline: 3px solid var(--focus); outline-offset: 2px; }
+.region-canvas-wrap.has-image { min-height: 0; }
+#regionImage { display: block; max-width: 100%; height: auto; user-select: none; }
+#regionCanvas {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+.drop-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 700;
+  pointer-events: none;
+}
+.region-canvas-wrap.has-image .drop-hint { display: none; }
+.region-side {
+  position: sticky;
+  top: 82px;
+}
+.region-block {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--soft);
+}
+.region-coords {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.region-list { display: grid; gap: 6px; max-height: 240px; overflow: auto; }
+.region-crop-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+#regionCropCanvas {
+  display: block;
+  max-width: none;
+  border-radius: 4px;
+}
+.crop-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 18px;
+  text-align: center;
+}
+.preview-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  color: var(--text);
+}
+.preview-summary > div {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  background: #fff;
+  min-width: 0;
+}
+.preview-summary strong, .preview-summary small, .preview-fields span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.preview-summary small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.preview-fields { grid-column: 1 / -1; }
+.preview-fields span + span { margin-top: 6px; }
+.raw-json-details {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+}
+.raw-json-details summary { cursor: pointer; font-weight: 700; }
+.raw-json-details .result-box { margin-top: 8px; }
+.region-item {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.region-item.is-active { border-color: var(--primary); box-shadow: inset 3px 0 0 var(--primary); }
+.region-item strong { display: block; overflow-wrap: anywhere; }
+.region-item small { display: block; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
 
 @media (max-width: 1100px) {
-  .split, .config-workbench, .preview-grid { grid-template-columns: 1fr; }
+  .split, .config-workbench, .preview-grid, .region-workbench { grid-template-columns: 1fr; }
   .list-panel, .config-nav, .editor-panel > .panel-head, .tabs { position: static; max-height: none; }
+  .region-side { position: static; }
 }
 
 @media (max-width: 760px) {
-  .topbar, .control-grid, .control-grid.compact, .section-toolbar, .preview-form, .overview-grid { grid-template-columns: 1fr; display: grid; }
+  .topbar, .control-grid, .control-grid.compact, .section-toolbar, .preview-form, .overview-grid, .region-coords { grid-template-columns: 1fr; display: grid; }
   .topbar { align-items: stretch; }
   .form-card > summary { grid-template-columns: 1fr; }
   .form-card > summary small { white-space: normal; }

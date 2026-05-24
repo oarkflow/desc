@@ -10,6 +10,13 @@ const state = {
   selectedField: null,
   fieldQuery: "",
   previewJSON: null,
+  regionImageFile: null,
+  regionImageURL: "",
+  regionImageLoaded: false,
+  regionPreviewJSON: null,
+  regions: [],
+  selectedRegionId: null,
+  regionDrag: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -17,6 +24,17 @@ const STRATEGIES = ["same_line_after_label", "same_row_right_of_label", "same_ro
 const NORMALIZERS = ["nepali_digits_to_ascii", "citizenship_number", "bs_date_components", "ad_date_components", "clean_devanagari_name", "person_name_repair"];
 const SOURCE_KINDS = ["printed", "handwritten"];
 const PASS_MODES = ["default", "retry_only"];
+const REGION_FIELD_TARGETS = new Set(["field_anchor", "field_retry", "tamper_field"]);
+const REGION_COLORS = {
+  field_anchor: "#0f766e",
+  field_retry: "#2563eb",
+  tamper_field: "#7c3aed",
+  protected: "#b42318",
+  expected_object: "#d97706",
+  ocr: "#0891b2",
+  object: "#65a30d",
+  flag: "#dc2626",
+};
 
 function headers(extra = {}) {
   const out = { ...extra };
@@ -108,6 +126,7 @@ async function loadDocumentType(id) {
   state.selectedPass = null;
   state.selectedField = null;
   state.fieldQuery = "";
+  hydrateRegionsFromModel();
   $("typeTitle").textContent = id;
   $("typeMeta").textContent = payload.name || "";
   $("saveType").disabled = false;
@@ -174,9 +193,11 @@ function defaultField() {
     anchor_region: null,
     source_passes: [],
     source_kinds: [],
-    review_source_kinds: [],
-    retry_region: null,
-    same_as_field: "",
+      review_source_kinds: [],
+      retry_region: null,
+      retry_regions: [],
+      anchor_regions: [],
+      same_as_field: "",
     consistency_field: "",
     gazetteer_hint_fields: [],
     template: "",
@@ -223,6 +244,7 @@ function configNavigator(model) {
     navItem("Overview", state.editorSection === "overview", () => selectEditor("overview")),
     navItem("Detection", state.editorSection === "detection", () => selectEditor("detection")),
     navItem("OCR runtime", state.editorSection === "runtime", () => selectEditor("runtime")),
+    navItem("Regions", state.editorSection === "regions", () => selectEditor("regions"), `${state.regions.length} boxes`),
   ]));
 
   const passes = model.profile.ocr?.passes || [];
@@ -280,6 +302,10 @@ function configDetail(model) {
   }
   if (state.editorSection === "runtime") {
     detail.appendChild(runtimeSection(model.profile.ocr));
+    return detail;
+  }
+  if (state.editorSection === "regions") {
+    detail.appendChild(regionEditorSection(model));
     return detail;
   }
   if (state.editorSection === "pass") {
@@ -944,6 +970,604 @@ function summaryStrip(model) {
   return el;
 }
 
+function regionEditorSection() {
+  const el = document.createElement("section");
+  el.className = "form-section region-editor";
+  el.innerHTML = `
+    <div class="section-title">
+      <h3>Regions</h3>
+      <div class="actions">
+        <button id="regionRunOCR" class="button" type="button">Run OCR preview</button>
+        <button id="regionDelete" class="button danger" type="button" disabled>Delete selected</button>
+      </div>
+    </div>
+    <div class="region-workbench">
+      <div class="region-canvas-panel">
+        <label class="region-upload">Image<input id="regionImageFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+        <div id="regionCanvasWrap" class="region-canvas-wrap">
+          <div class="drop-hint">Drop image here, then drag to create a box</div>
+          <img id="regionImage" alt="">
+          <canvas id="regionCanvas"></canvas>
+        </div>
+      </div>
+      <aside class="region-side">
+        <div class="region-block">
+          <h2>Selected box</h2>
+          <label>Target
+            <select id="regionTarget">
+              <option value="field_anchor">Field anchor region</option>
+              <option value="field_retry">Field retry region</option>
+              <option value="tamper_field">Tamper field/layout region</option>
+              <option value="protected">Protected asset region</option>
+              <option value="expected_object">Expected object region</option>
+            </select>
+          </label>
+          <label id="regionFieldWrap">Field
+            <input id="regionFieldName" list="regionFieldNames" placeholder="full_name">
+          </label>
+          <datalist id="regionFieldNames"></datalist>
+          <label id="regionAssetWrap">Asset or object
+            <input id="regionAssetName" list="regionAssetNames" placeholder="photo">
+          </label>
+          <datalist id="regionAssetNames">
+            <option value="photo"></option><option value="portrait"></option><option value="face"></option><option value="logo"></option>
+            <option value="hologram"></option><option value="stamp"></option><option value="signature"></option><option value="seal"></option>
+          </datalist>
+          <div class="region-coords">
+            <label>x1<input id="regionX1" type="number" min="0" max="1" step="0.0001"></label>
+            <label>y1<input id="regionY1" type="number" min="0" max="1" step="0.0001"></label>
+            <label>x2<input id="regionX2" type="number" min="0" max="1" step="0.0001"></label>
+            <label>y2<input id="regionY2" type="number" min="0" max="1" step="0.0001"></label>
+          </div>
+        </div>
+        <div class="region-block">
+          <div class="inline-head"><h2>Boxes</h2><button id="regionClear" class="button danger" type="button">Clear</button></div>
+          <div id="regionList" class="region-list"></div>
+        </div>
+        <div class="region-block">
+          <h2>Selected crop</h2>
+          <div class="region-crop-wrap"><canvas id="regionCropCanvas"></canvas><div id="regionCropEmpty" class="crop-empty">Select a box to inspect its crop.</div></div>
+        </div>
+        <div class="region-block">
+          <h2>OCR preview</h2>
+          <div id="regionPreviewSummary" class="preview-summary muted">Run OCR preview to draw OCR boxes on the image.</div>
+          <details class="raw-json-details">
+            <summary>Raw JSON</summary>
+            <pre id="regionPreviewResult" class="result-box compact"></pre>
+          </details>
+        </div>
+      </aside>
+    </div>
+  `;
+  setTimeout(wireRegionEditor, 0);
+  return el;
+}
+
+function hydrateRegionsFromModel() {
+  state.regions = regionsFromModel(state.documentModel);
+  state.selectedRegionId = state.regions[0]?.id || null;
+  state.regionPreviewJSON = null;
+}
+
+function regionsFromModel(model) {
+  if (!model) return [];
+  const out = [];
+  const fields = model.profile?.fields || {};
+  Object.entries(fields).forEach(([name, field]) => {
+    regionBoxes(field.anchor_region).forEach((box) => out.push(regionItem("field_anchor", name, box)));
+    regionBoxes(field.anchor_regions).forEach((box) => out.push(regionItem("field_anchor", name, box)));
+    regionBoxes(field.retry_region).forEach((box) => out.push(regionItem("field_retry", name, box)));
+    regionBoxes(field.retry_regions).forEach((box) => out.push(regionItem("field_retry", name, box)));
+  });
+  Object.entries(model.profile?.tamper?.field_regions || {}).forEach(([name, value]) => {
+    regionBoxes(value).forEach((box) => out.push(regionItem("tamper_field", name, box)));
+  });
+  Object.entries(model.profile?.tamper?.protected_regions || {}).forEach(([name, value]) => {
+    regionBoxes(value).forEach((box) => out.push(regionItem("protected", name, box)));
+  });
+  (model.profile?.tamper?.expected_objects || []).forEach((item) => {
+    regionBoxes(item.region).forEach((box) => out.push(regionItem("expected_object", item.label || "face", box)));
+    regionBoxes(item.regions).forEach((box) => out.push(regionItem("expected_object", item.label || "face", box)));
+  });
+  return out;
+}
+
+function regionItem(target, name, box) {
+  return { id: newRegionId(), target, name, box: cleanRegionBox(box) };
+}
+
+function wireRegionEditor() {
+  if (!$("regionCanvas")) return;
+  renderRegionInspector();
+  restoreRegionImage();
+  $("regionImageFile").addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    if (file) loadRegionImage(file);
+  });
+  const wrap = $("regionCanvasWrap");
+  wrap.addEventListener("dragover", (event) => { event.preventDefault(); wrap.classList.add("is-dragover"); });
+  wrap.addEventListener("dragleave", () => wrap.classList.remove("is-dragover"));
+  wrap.addEventListener("drop", (event) => {
+    event.preventDefault();
+    wrap.classList.remove("is-dragover");
+    const file = event.dataTransfer.files[0];
+    if (file && file.type.startsWith("image/")) loadRegionImage(file);
+  });
+  $("regionRunOCR").addEventListener("click", () => runRegionPreview().catch((err) => notice(err.message, true)));
+  $("regionDelete").addEventListener("click", () => {
+    state.regions = state.regions.filter((item) => item.id !== state.selectedRegionId);
+    state.selectedRegionId = state.regions[0]?.id || null;
+    regionChanged();
+  });
+  $("regionClear").addEventListener("click", () => {
+    if (!confirm("Clear all drawn regions for this document type?")) return;
+    state.regions = [];
+    state.selectedRegionId = null;
+    regionChanged();
+  });
+  ["regionTarget", "regionFieldName", "regionAssetName", "regionX1", "regionY1", "regionX2", "regionY2"].forEach((id) => {
+    $(id).addEventListener("input", updateSelectedRegionFromForm);
+    $(id).addEventListener("change", updateSelectedRegionFromForm);
+  });
+  const canvas = $("regionCanvas");
+  canvas.addEventListener("pointerdown", onRegionPointerDown);
+  canvas.addEventListener("pointermove", onRegionPointerMove);
+  window.addEventListener("pointerup", onRegionPointerUp);
+  drawRegions();
+}
+
+function restoreRegionImage() {
+  if (!state.regionImageURL || !$("regionImage")) return;
+  const image = $("regionImage");
+  image.onload = () => {
+    state.regionImageLoaded = true;
+    $("regionCanvasWrap").classList.add("has-image");
+    drawRegions();
+  };
+  image.src = state.regionImageURL;
+}
+
+function loadRegionImage(file) {
+  state.regionImageFile = file;
+  state.regionPreviewJSON = null;
+  if (state.regionImageURL) URL.revokeObjectURL(state.regionImageURL);
+  state.regionImageURL = URL.createObjectURL(file);
+  restoreRegionImage();
+}
+
+function selectedRegion() {
+  return state.regions.find((item) => item.id === state.selectedRegionId) || null;
+}
+
+function renderRegionInspector() {
+  if (!$("regionList")) return;
+  const selected = selectedRegion();
+  $("regionDelete").disabled = !selected;
+  ["regionTarget", "regionFieldName", "regionAssetName", "regionX1", "regionY1", "regionX2", "regionY2"].forEach((id) => { $(id).disabled = !selected; });
+  const fieldList = $("regionFieldNames");
+  fieldList.innerHTML = "";
+  fieldNames().forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    fieldList.appendChild(option);
+  });
+  if (selected) {
+    $("regionTarget").value = selected.target;
+    $("regionFieldName").value = REGION_FIELD_TARGETS.has(selected.target) ? selected.name : "";
+    $("regionAssetName").value = REGION_FIELD_TARGETS.has(selected.target) ? "" : selected.name;
+    selected.box.forEach((value, index) => { $(["regionX1", "regionY1", "regionX2", "regionY2"][index]).value = value; });
+  } else {
+    ["regionFieldName", "regionAssetName", "regionX1", "regionY1", "regionX2", "regionY2"].forEach((id) => { $(id).value = ""; });
+  }
+  $("regionFieldWrap").hidden = !selected || !REGION_FIELD_TARGETS.has($("regionTarget").value);
+  $("regionAssetWrap").hidden = !selected || REGION_FIELD_TARGETS.has($("regionTarget").value);
+  renderRegionList();
+  drawSelectedRegionCrop();
+}
+
+function renderRegionList() {
+  const list = $("regionList");
+  list.innerHTML = "";
+  if (!state.regions.length) {
+    const empty = document.createElement("div");
+    empty.className = "region-item";
+    empty.innerHTML = "<strong>No boxes yet</strong><small>Drag on the image to create one.</small>";
+    list.appendChild(empty);
+    return;
+  }
+  state.regions.forEach((item, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = item.id === state.selectedRegionId ? "region-item is-active" : "region-item";
+    row.innerHTML = `<strong>${index + 1}. ${escapeHTML(regionLabel(item))}</strong><small>${item.box.join(", ")}</small>`;
+    row.addEventListener("click", () => { state.selectedRegionId = item.id; renderRegionInspector(); drawRegions(); });
+    list.appendChild(row);
+  });
+}
+
+function regionLabel(item) {
+  return `${item.target.replaceAll("_", " ")}: ${item.name || "unnamed"}`;
+}
+
+function updateSelectedRegionFromForm() {
+  const item = selectedRegion();
+  if (!item) return;
+  item.target = $("regionTarget").value;
+  item.name = REGION_FIELD_TARGETS.has(item.target)
+    ? slugValue($("regionFieldName").value)
+    : slugValue($("regionAssetName").value);
+  item.box = cleanRegionBox(["regionX1", "regionY1", "regionX2", "regionY2"].map((id) => Number($(id).value)));
+  regionChanged();
+}
+
+function regionChanged() {
+  syncRegionsToModel();
+  renderRegionInspector();
+  drawRegions();
+  scheduleYAMLRefresh();
+}
+
+function syncRegionsToModel() {
+  if (!state.documentModel) return;
+  const profile = state.documentModel.profile ||= {};
+  profile.fields ||= {};
+  profile.tamper ||= {};
+  const existingExpectedObjects = profile.tamper.expected_objects || [];
+  profile.tamper.field_regions = {};
+  profile.tamper.protected_regions = {};
+  Object.values(profile.fields).forEach((field) => {
+    delete field.anchor_region;
+    delete field.anchor_regions;
+    delete field.retry_region;
+    delete field.retry_regions;
+  });
+  const grouped = {};
+  state.regions.forEach((item) => {
+    if (!item.name) return;
+    grouped[item.target] ||= {};
+    grouped[item.target][item.name] ||= [];
+    grouped[item.target][item.name].push(cleanRegionBox(item.box));
+  });
+  Object.entries(grouped.field_anchor || {}).forEach(([name, boxes]) => {
+    profile.fields[name] ||= defaultField();
+    profile.fields[name].strategies ||= [];
+    if (!profile.fields[name].strategies.includes("anchor_region")) profile.fields[name].strategies.push("anchor_region");
+    assignRegionBoxes(profile.fields[name], "anchor_region", "anchor_regions", boxes);
+  });
+  Object.entries(grouped.field_retry || {}).forEach(([name, boxes]) => {
+    profile.fields[name] ||= defaultField();
+    assignRegionBoxes(profile.fields[name], "retry_region", "retry_regions", boxes);
+  });
+  Object.entries(grouped.tamper_field || {}).forEach(([name, boxes]) => {
+    profile.tamper.field_regions[name] = serializeRegionBoxes(boxes);
+  });
+  Object.entries(grouped.protected || {}).forEach(([name, boxes]) => {
+    profile.tamper.protected_regions[name] = serializeRegionBoxes(boxes);
+  });
+  const expectedByLabel = new Map(existingExpectedObjects.map((item) => [item.label, { ...item }]));
+  Object.entries(grouped.expected_object || {}).forEach(([label, boxes]) => {
+    const existing = expectedByLabel.get(label) || { label, required: false, min_confidence: 0 };
+    const next = { ...existing, label };
+    delete next.region;
+    delete next.regions;
+    assignRegionBoxes(next, "region", "regions", boxes);
+    expectedByLabel.set(label, next);
+  });
+  profile.tamper.expected_objects = Array.from(expectedByLabel.values());
+}
+
+function assignRegionBoxes(target, singleKey, multiKey, boxes) {
+  delete target[singleKey];
+  delete target[multiKey];
+  if (boxes.length === 1) target[singleKey] = cleanRegionBox(boxes[0]);
+  if (boxes.length > 1) target[multiKey] = boxes.map(cleanRegionBox);
+}
+
+function serializeRegionBoxes(boxes) {
+  return boxes.length === 1 ? cleanRegionBox(boxes[0]) : boxes.map(cleanRegionBox);
+}
+
+async function runRegionPreview() {
+  if (!state.regionImageFile) throw new Error("Upload an image in Regions first.");
+  const data = new FormData();
+  data.append("file", state.regionImageFile, state.regionImageFile.name);
+  if (state.currentType) data.append("document_type", state.currentType);
+  data.append("values_only", "false");
+  data.append("accuracy_mode", "accurate");
+  data.append("retry", "true");
+  $("regionPreviewSummary").textContent = "Running OCR preview...";
+  $("regionPreviewResult").textContent = "";
+  const res = await fetch("/admin/api/preview", { method: "POST", headers: headers(), body: data });
+  const text = await res.text();
+  if (!res.ok) throw new Error(text || res.statusText);
+  state.regionPreviewJSON = JSON.parse(text);
+  renderRegionPreviewSummary();
+  $("regionPreviewResult").textContent = JSON.stringify(state.regionPreviewJSON, null, 2);
+  drawRegions();
+  drawSelectedRegionCrop();
+}
+
+function renderRegionPreviewSummary() {
+  const box = $("regionPreviewSummary");
+  if (!box) return;
+  const result = state.regionPreviewJSON || {};
+  const values = result.values || {};
+  const flags = result.flags || [];
+  const objects = result.object_summary || {};
+  const faceNote = objects.face_count
+    ? `${objects.face_count} heuristic face/photo candidate${objects.face_count === 1 ? "" : "s"}`
+    : "no face/photo candidates";
+  const fieldText = Object.keys(values).length
+    ? Object.entries(values).map(([key, value]) => `<span><strong>${escapeHTML(key)}</strong>${escapeHTML(value)}</span>`).join("")
+    : "<span>No fields extracted</span>";
+  box.className = "preview-summary";
+  box.innerHTML = `
+    <div><strong>${escapeHTML(result.document_type || "unknown")}</strong><small>Document type</small></div>
+    <div><strong>${Number(objects.text_region_count || 0)}</strong><small>OCR text boxes drawn</small></div>
+    <div><strong>${escapeHTML(faceNote)}</strong><small>OpenCV heuristic, not identity proof</small></div>
+    <div><strong>${flags.length}</strong><small>Tamper flags drawn when box evidence exists</small></div>
+    <div class="preview-fields">${fieldText}</div>
+  `;
+}
+
+function drawRegions() {
+  const canvas = $("regionCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!state.regionImageLoaded) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  const metrics = regionImageMetrics();
+  ctx.clearRect(0, 0, metrics.width, metrics.height);
+  drawRegionPreview(ctx, metrics);
+  state.regions.forEach((item) => drawRegionBox(ctx, metrics, item, item.id === state.selectedRegionId));
+  drawSelectedRegionCrop();
+}
+
+function drawSelectedRegionCrop() {
+  const canvas = $("regionCropCanvas");
+  const empty = $("regionCropEmpty");
+  const image = $("regionImage");
+  const item = selectedRegion();
+  if (!canvas || !empty) return;
+  if (!state.regionImageLoaded || !item || !image.naturalWidth || !image.naturalHeight) {
+    canvas.width = 0;
+    canvas.height = 0;
+    empty.hidden = false;
+    return;
+  }
+  const [x1, y1, x2, y2] = item.box;
+  const sx = Math.round(x1 * image.naturalWidth);
+  const sy = Math.round(y1 * image.naturalHeight);
+  const sw = Math.max(Math.round((x2 - x1) * image.naturalWidth), 1);
+  const sh = Math.max(Math.round((y2 - y1) * image.naturalHeight), 1);
+  const maxWidth = 320;
+  const scale = Math.max(1, Math.min(4, maxWidth / Math.max(sw, 1)));
+  canvas.width = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  empty.hidden = true;
+}
+
+function regionImageMetrics() {
+  const image = $("regionImage");
+  const canvas = $("regionCanvas");
+  const rect = image.getBoundingClientRect();
+  canvas.width = Math.round(rect.width);
+  canvas.height = Math.round(rect.height);
+  canvas.style.width = `${rect.width}px`;
+  canvas.style.height = `${rect.height}px`;
+  canvas.style.left = `${image.offsetLeft}px`;
+  canvas.style.top = `${image.offsetTop}px`;
+  return { width: canvas.width, height: canvas.height };
+}
+
+function drawRegionBox(ctx, metrics, item, active) {
+  const [x1, y1, x2, y2] = item.box;
+  const x = x1 * metrics.width;
+  const y = y1 * metrics.height;
+  const w = (x2 - x1) * metrics.width;
+  const h = (y2 - y1) * metrics.height;
+  ctx.save();
+  ctx.strokeStyle = REGION_COLORS[item.target] || "#0f766e";
+  ctx.fillStyle = `${ctx.strokeStyle}22`;
+  ctx.lineWidth = active ? 3 : 2;
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.font = "12px system-ui";
+  ctx.fillText(regionLabel(item), x + 5, Math.max(y + 15, 15));
+  if (active) [[x, y], [x + w, y], [x, y + h], [x + w, y + h]].forEach(([px, py]) => {
+    ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#111827";
+    ctx.fillRect(px - 6, py - 6, 12, 12);
+    ctx.strokeRect(px - 6, py - 6, 12, 12);
+  });
+  ctx.restore();
+}
+
+function drawRegionPreview(ctx, metrics) {
+  const result = state.regionPreviewJSON || {};
+  const sourceWidth = Number(result.width) || $("regionImage").naturalWidth;
+  const sourceHeight = Number(result.height) || $("regionImage").naturalHeight;
+  if (!sourceWidth || !sourceHeight) return;
+  (result.items || []).forEach((item) => {
+    const bounds = boundsFromOCRBox(item.box);
+    if (bounds) drawPixelRegion(ctx, metrics, bounds, sourceWidth, sourceHeight, REGION_COLORS.ocr, item.text || "ocr");
+  });
+  (result.objects || []).forEach((item) => {
+    const pixel = item.box?.pixel;
+    if (pixel) drawPixelRegion(ctx, metrics, [pixel.x, pixel.y, pixel.x + pixel.width, pixel.y + pixel.height], sourceWidth, sourceHeight, REGION_COLORS.object, item.label || "object");
+  });
+  (result.flags || []).forEach((flag) => {
+    const bounds = flag.evidence?.bounds;
+    if (isRegionBox(bounds)) drawPixelRegion(ctx, metrics, bounds, sourceWidth, sourceHeight, REGION_COLORS.flag, flag.code || "flag");
+  });
+}
+
+function drawPixelRegion(ctx, metrics, bounds, sourceWidth, sourceHeight, color, label) {
+  const [x1, y1, x2, y2] = bounds.map(Number);
+  const x = x1 / sourceWidth * metrics.width;
+  const y = y1 / sourceHeight * metrics.height;
+  const w = (x2 - x1) / sourceWidth * metrics.width;
+  const h = (y2 - y1) / sourceHeight * metrics.height;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = color;
+  ctx.font = "11px system-ui";
+  ctx.fillText(label, x + 4, Math.max(y + 12, 12));
+  ctx.restore();
+}
+
+function onRegionPointerDown(event) {
+  if (!state.regionImageLoaded) return;
+  event.preventDefault();
+  $("regionCanvas").setPointerCapture(event.pointerId);
+  const point = regionPointer(event);
+  const hit = hitRegion(point);
+  if (hit) {
+    state.selectedRegionId = hit.id;
+    const corner = hitRegionCorner(hit, point);
+    state.regionDrag = { type: corner ? "resize" : "move", corner, pointerId: event.pointerId, start: point, original: [...hit.box] };
+  } else {
+    const target = $("regionTarget")?.value || "field_anchor";
+    const item = regionItem(target, defaultRegionName(target), [point.x, point.y, point.x, point.y]);
+    state.regions.push(item);
+    state.selectedRegionId = item.id;
+    state.regionDrag = { type: "create", pointerId: event.pointerId, start: point, original: [...item.box] };
+  }
+  regionChanged();
+}
+
+function onRegionPointerMove(event) {
+  if (!state.regionImageLoaded) return;
+  updateRegionCursor(event);
+  if (!state.regionDrag) return;
+  event.preventDefault();
+  const item = selectedRegion();
+  if (!item) return;
+  const point = regionPointer(event);
+  const drag = state.regionDrag;
+  if (drag.type === "move") {
+    const dx = point.x - drag.start.x;
+    const dy = point.y - drag.start.y;
+    const width = drag.original[2] - drag.original[0];
+    const height = drag.original[3] - drag.original[1];
+    const x1 = clamp(drag.original[0] + dx, 0, 1 - width);
+    const y1 = clamp(drag.original[1] + dy, 0, 1 - height);
+    item.box = cleanRegionBox([x1, y1, x1 + width, y1 + height]);
+  } else if (drag.type === "resize") {
+    const next = [...drag.original];
+    if (drag.corner.includes("w")) next[0] = point.x;
+    if (drag.corner.includes("e")) next[2] = point.x;
+    if (drag.corner.includes("n")) next[1] = point.y;
+    if (drag.corner.includes("s")) next[3] = point.y;
+    item.box = cleanRegionBox(next);
+  } else {
+    item.box = cleanRegionBox([drag.start.x, drag.start.y, point.x, point.y]);
+  }
+  regionChanged();
+}
+
+function onRegionPointerUp() {
+  if (state.regionDrag?.pointerId) {
+    try { $("regionCanvas").releasePointerCapture(state.regionDrag.pointerId); } catch {}
+  }
+  state.regionDrag = null;
+  const item = selectedRegion();
+  if (item && (item.box[2] - item.box[0] < 0.004 || item.box[3] - item.box[1] < 0.004)) {
+    state.regions = state.regions.filter((candidate) => candidate.id !== item.id);
+    state.selectedRegionId = state.regions[0]?.id || null;
+    regionChanged();
+  }
+  drawSelectedRegionCrop();
+}
+
+function regionPointer(event) {
+  const rect = $("regionCanvas").getBoundingClientRect();
+  return { x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) };
+}
+
+function hitRegion(point) {
+  for (let i = state.regions.length - 1; i >= 0; i -= 1) {
+    const item = state.regions[i];
+    const [x1, y1, x2, y2] = item.box;
+    if (point.x >= x1 && point.x <= x2 && point.y >= y1 && point.y <= y2) return item;
+  }
+  return null;
+}
+
+function hitRegionCorner(item, point) {
+  const threshold = 0.025;
+  const corners = [["nw", item.box[0], item.box[1]], ["ne", item.box[2], item.box[1]], ["sw", item.box[0], item.box[3]], ["se", item.box[2], item.box[3]]];
+  const found = corners.find(([, x, y]) => Math.abs(point.x - x) <= threshold && Math.abs(point.y - y) <= threshold);
+  return found ? found[0] : "";
+}
+
+function updateRegionCursor(event) {
+  if (state.regionDrag || !$("regionCanvas")) return;
+  const hit = hitRegion(regionPointer(event));
+  if (!hit) {
+    $("regionCanvas").style.cursor = "crosshair";
+    return;
+  }
+  const corner = hitRegionCorner(hit, regionPointer(event));
+  $("regionCanvas").style.cursor = corner === "nw" || corner === "se" ? "nwse-resize" : corner ? "nesw-resize" : "move";
+}
+
+function regionBoxes(value) {
+  if (!value) return [];
+  if (isRegionBox(value)) return [cleanRegionBox(value)];
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRegionBox).map(cleanRegionBox);
+}
+
+function isRegionBox(value) {
+  return Array.isArray(value) && value.length === 4 && value.every((item) => Number.isFinite(Number(item)));
+}
+
+function cleanRegionBox(value) {
+  const [rawX1, rawY1, rawX2, rawY2] = value.map(Number);
+  const x1 = clamp(Math.min(rawX1, rawX2));
+  const y1 = clamp(Math.min(rawY1, rawY2));
+  const x2 = clamp(Math.max(rawX1, rawX2));
+  const y2 = clamp(Math.max(rawY1, rawY2));
+  return [round4(x1), round4(y1), round4(x2), round4(y2)];
+}
+
+function boundsFromOCRBox(box) {
+  if (!Array.isArray(box) || box.length < 2) return null;
+  const xs = box.map((point) => Number(point[0])).filter(Number.isFinite);
+  const ys = box.map((point) => Number(point[1])).filter(Number.isFinite);
+  if (!xs.length || !ys.length) return null;
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+function defaultRegionName(target) {
+  if (REGION_FIELD_TARGETS.has(target)) return fieldNames()[0] || "";
+  return target === "expected_object" ? "face" : "photo";
+}
+
+function clamp(value, min = 0, max = 1) {
+  return Math.min(Math.max(Number(value) || 0, min), max);
+}
+
+function round4(value) {
+  return Math.round(Number(value) * 10000) / 10000;
+}
+
+function newRegionId() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+  return `region-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function splitCSV(value) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
@@ -977,6 +1601,7 @@ function wireEvents() {
     state.selectedPass = null;
     state.selectedField = null;
     state.fieldQuery = "";
+    hydrateRegionsFromModel();
     $("typeTitle").textContent = "New document type";
     $("saveType").disabled = false;
     $("duplicateType").disabled = true;

@@ -470,10 +470,12 @@ def summarize_objects(objects: list[dict[str, Any]]) -> dict[str, Any]:
         (float(item.get("confidence") or 0.0) for item in objects if item.get("label") == "id_card"),
         default=0.0,
     )
+    face_objects = [item for item in objects if item.get("label") == "face"]
     return {
         "has_id_card": id_card_confidence > 0,
         "id_card_confidence": round(id_card_confidence, 4),
-        "face_count": sum(1 for item in objects if item.get("label") == "face"),
+        "face_count": len(face_objects),
+        "face_detection_method": "opencv_heuristic" if face_objects else "",
         "text_region_count": sum(1 for item in objects if item.get("label") == "text_region"),
     }
 
@@ -566,15 +568,26 @@ class OpenCVObjectDetectionProvider(ObjectDetectionProvider):
             return []
 
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+        min_side = max(48, int(min(width, height) * 0.07))
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(min_side, min_side),
+        )
         detections = []
+        image_area = max(float(width * height), 1.0)
         for x, y, face_w, face_h in faces:
+            area_ratio = float(face_w * face_h) / image_area
+            if area_ratio < 0.006:
+                continue
             detections.append(
                 {
                     "label": "face",
-                    "confidence": 0.75,
+                    "confidence": round(min(0.9, 0.55 + area_ratio * 8), 4),
                     "box": detection_box(x, y, face_w, face_h, width, height),
                     "source": self.provider_name,
+                    "heuristic": True,
                 }
             )
         return detections

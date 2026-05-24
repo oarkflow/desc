@@ -241,6 +241,16 @@ class OpenCVObjectDetectionTests(unittest.TestCase):
         self.assertEqual([item for item in objects if item["label"] == "id_card"], [])
         self.assertFalse(summary["has_id_card"])
 
+    def test_citizenship_sample_filters_small_false_face_candidates(self):
+        image_path = Path(__file__).resolve().parents[1] / "testdata" / "citizenship.jpg"
+        image = np.array(Image.open(image_path).convert("RGB"))
+
+        objects, summary = ocr_service.ObjectDetectionService("opencv").detect(image, [])
+
+        faces = [item for item in objects if item["label"] == "face"]
+        self.assertLessEqual(summary["face_count"], 1)
+        self.assertEqual(summary["face_count"], len(faces))
+
 
 class TamperDetectionTests(unittest.TestCase):
     def setUp(self):
