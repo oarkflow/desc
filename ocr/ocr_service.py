@@ -384,6 +384,8 @@ class OCRResponse(BaseModel):
     width: int
     height: int
     processing_ms: int
+    document_type: str
+    document_type_confidence: float
     full_text: str
     values: dict[str, str]
     fields: dict[str, OCRField]
@@ -3396,6 +3398,8 @@ async def ocr_endpoint(
     resource_usage = resource_delta(resource_started)
     runtime_meta["device"] = ocr_device()
     runtime_meta["gpu"] = ocr_uses_gpu()
+    runtime_meta["document_type"] = resolved_document_type
+    runtime_meta["document_type_confidence"] = document_type_confidence
     runtime_meta["resource_usage"] = resource_usage
 
     if values_only:
@@ -3445,6 +3449,8 @@ async def ocr_endpoint(
         width=original_w,
         height=original_h,
         processing_ms=elapsed_ms,
+        document_type=resolved_document_type,
+        document_type_confidence=document_type_confidence,
         full_text=normalize_text(items),
         values=values,
         fields=fields,

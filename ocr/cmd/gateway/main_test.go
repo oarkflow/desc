@@ -25,16 +25,19 @@ func TestWithOCRDefaults(t *testing.T) {
 	if got.Get("retry") != "false" {
 		t.Fatalf("retry default = %q", got.Get("retry"))
 	}
+	if got.Get("values_only") != "true" {
+		t.Fatalf("values_only default = %q", got.Get("values_only"))
+	}
 	if values.Get("accuracy_mode") != "" {
 		t.Fatal("input values were mutated")
 	}
 }
 
 func TestWithOCRDefaultsPreservesOverrides(t *testing.T) {
-	values := url.Values{"accuracy_mode": {"accurate"}, "retry": {"true"}}
+	values := url.Values{"accuracy_mode": {"accurate"}, "retry": {"true"}, "values_only": {"false"}}
 	got := withOCRDefaults(values, "fast", "false")
 
-	if got.Get("accuracy_mode") != "accurate" || got.Get("retry") != "true" {
+	if got.Get("accuracy_mode") != "accurate" || got.Get("retry") != "true" || got.Get("values_only") != "false" {
 		t.Fatalf("overrides were not preserved: %s", got.Encode())
 	}
 }
@@ -80,6 +83,9 @@ func TestOCRProxyForwardsBodyAndDefaults(t *testing.T) {
 	}
 	if values.Get("accuracy_mode") != "fast" || values.Get("retry") != "false" || values.Get("document_type") != "x" {
 		t.Fatalf("unexpected upstream query: %s", upstreamQuery)
+	}
+	if values.Get("values_only") != "true" || values.Get("fields_only") != "" {
+		t.Fatalf("unexpected response shape defaults: %s", upstreamQuery)
 	}
 	if !strings.Contains(upstreamBody, "hello") {
 		t.Fatalf("upstream body did not contain upload data")

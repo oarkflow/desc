@@ -71,8 +71,11 @@ class ApplicantFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        verification = response.get_json()["verification"]
+        data = response.get_json()
+        verification = data["verification"]
         self.assertEqual(verification["face_embeddings"][0]["source_type"], "document")
+        self.assertEqual(data["gateway"]["document_type_resolution"]["resolved_document_type"], "national_id")
+        self.assertTrue(data["gateway"]["document_type_resolution"]["used_fallback"])
 
 
 if __name__ == "__main__":

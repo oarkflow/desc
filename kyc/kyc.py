@@ -725,7 +725,7 @@ class OCRGatewayClient:
         path = Path(image_path)
         upload_name = filename or path.name
         upload_content_type = content_type or mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
-        params = {"values_only": "false", "fields_only": "true"}
+        params = {"values_only": "true"}
         if document_type and self.send_document_type:
             params["document_type"] = document_type
         headers = {"Accept": "application/json"}
@@ -809,6 +809,16 @@ class OCRProfileMapper:
             if not detected and isinstance(meta, dict):
                 detected = meta.get("document_type")
         return self.normalize_document_type(detected) or self.normalize_document_type(fallback)
+
+    def uses_fallback(self, gateway_result):
+        response = gateway_result.get("response", {}) if isinstance(gateway_result, dict) else {}
+        if not isinstance(response, dict):
+            return True
+        detected = response.get("document_type")
+        meta = response.get("meta")
+        if not detected and isinstance(meta, dict):
+            detected = meta.get("document_type")
+        return self.normalize_document_type(detected) is None
 
     def normalize_document_type(self, document_type):
         if not document_type:

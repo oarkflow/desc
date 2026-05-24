@@ -193,9 +193,11 @@ class OCRProfileMapperTests(unittest.TestCase):
 
     def test_falls_back_to_selected_document_type_when_ocr_type_is_unknown(self):
         mapper = OCRProfileMapper()
-        suggested = mapper.map({"response": {"document_type": "unknown", "values": {}}}, document_type="passport")
+        gateway_result = {"response": {"document_type": "unknown", "values": {}}}
+        suggested = mapper.map(gateway_result, document_type="passport")
 
         self.assertEqual(suggested["document_type"], "passport")
+        self.assertTrue(mapper.uses_fallback(gateway_result))
 
 
 class OCRGatewayClientTests(unittest.TestCase):
@@ -217,8 +219,8 @@ class OCRGatewayClientTests(unittest.TestCase):
             uploaded = kwargs["files"]["file"]
             self.assertEqual(uploaded[0], "passport.jpg")
             self.assertEqual(uploaded[2], "image/jpeg")
-            self.assertEqual(kwargs["params"]["values_only"], "false")
-            self.assertEqual(kwargs["params"]["fields_only"], "true")
+            self.assertEqual(kwargs["params"]["values_only"], "true")
+            self.assertNotIn("fields_only", kwargs["params"])
             self.assertNotIn("document_type", kwargs["params"])
 
     def test_can_opt_into_forwarding_document_type(self):

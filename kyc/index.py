@@ -139,8 +139,21 @@ def upload_document(session_id):
                 filename=file_info["filename"],
             )
         except ValueError as error:
-            gateway_result = {"engine": "http_gateway", "error": str(error), "response": {}}
+            gateway_result = {
+                "engine": "http_gateway",
+                "error": str(error),
+                "response": {
+                    "document_type": "unknown",
+                    "values": {},
+                    "meta": {"document_type": "unknown", "document_type_confidence": 0.0},
+                },
+            }
         document_type = ocr_mapper.resolve_document_type(gateway_result, fallback=selected_document_type)
+        gateway_result["document_type_resolution"] = {
+            "selected_document_type": selected_document_type,
+            "resolved_document_type": document_type,
+            "used_fallback": ocr_mapper.uses_fallback(gateway_result),
+        }
         suggested_profile = ocr_mapper.map(gateway_result, document_type=document_type)
         if side not in DOCUMENT_TYPES.get(document_type, {}).get("sides", []):
             side = "front"

@@ -115,9 +115,9 @@ Query parameters forwarded to the OCR service:
 | --- | --- | --- |
 | `document_type` | auto-detect upstream | Optional document profile hint. Known profiles include `nepali_citizenship_old_front`, `nepali_citizenship_front_back`, `nepali_citizenship_mixed_language`, `nepali_national_id`, and `generic_devanagari_document`. |
 | `lang` | OCR service default, usually `ne` | OCR language override. |
-| `accuracy_mode` | `fast` | Gateway injects this when omitted. OCR supports profile-dependent behavior for `fast` and `accurate`. |
-| `retry` | `false` | Gateway injects this when omitted. Set `true` for retry passes where supported. |
-| `values_only` | OCR service default, `true` | Returns only extracted values by default. Set `false` for the full OCR payload. |
+| `accuracy_mode` | `accurate` | Gateway injects this when omitted. OCR supports profile-dependent behavior for `fast` and `accurate`. |
+| `retry` | `true` | Gateway injects this when omitted. Set `false` for lower-latency requests. |
+| `values_only` | `true` | Gateway injects this when omitted. Returns a lightweight `{document_type, values, meta}` response. Set `false` for the full OCR payload. |
 | `fields_only` | `false` | Returns structured field details without raw OCR items when true and `values_only=false`. |
 | `include_stats` | `false` | Adds processing metadata when `values_only=true`. |
 | `upscale` | `true` | Image preprocessing toggle. |
@@ -130,7 +130,7 @@ Query parameters forwarded to the OCR service:
 Minimal request:
 
 ```sh
-curl -X POST "http://localhost:8000/ocr?document_type=nepali_national_id" \
+curl -X POST "http://localhost:8000/ocr" \
   -H "X-API-Key: change-me" \
   -F "file=@testdata/national-id.webp"
 ```
@@ -147,9 +147,14 @@ Default `values_only=true` response:
 
 ```json
 {
-  "nid_number": "123-456-7890",
-  "full_name": "Example Name",
-  "date_of_birth": "1990-01-01"
+  "document_type": "nepali_national_id",
+  "values": {
+    "nid_number": "123-456-7890"
+  },
+  "meta": {
+    "document_type": "nepali_national_id",
+    "document_type_confidence": 0.3333
+  }
 }
 ```
 
@@ -157,10 +162,13 @@ Default `values_only=true` response:
 
 ```json
 {
+  "document_type": "nepali_national_id",
   "values": {
     "nid_number": "123-456-7890"
   },
   "meta": {
+    "document_type": "nepali_national_id",
+    "document_type_confidence": 0.3333,
     "device": "cpu",
     "gpu": false,
     "processing_ms": 1200,
@@ -184,6 +192,8 @@ Default `values_only=true` response:
   "width": 1200,
   "height": 800,
   "processing_ms": 1200,
+  "document_type": "nepali_national_id",
+  "document_type_confidence": 0.3333,
   "full_text": "recognized text",
   "values": {
     "nid_number": "123-456-7890"
@@ -284,12 +294,12 @@ All admin API routes are under `/admin/api` and require the same gateway API key
 | `GATEWAY_DATA_DIR` | `data` | Directory containing editable OCR data files. |
 | `GATEWAY_BACKUP_DIR` | `.gateway_backups` | Directory for timestamped backups before admin writes/deletes. |
 | `GATEWAY_MAX_ACTIVE` | `OCR_WORKERS` or `1` | Maximum concurrent OCR proxy requests. |
-| `GATEWAY_MAX_QUEUE` | `GATEWAY_MAX_ACTIVE * 4` in the binary, `4` in Compose | Number of OCR requests allowed to wait for a worker. Use `0` to disable waiting. |
-| `GATEWAY_UPSTREAM_TIMEOUT_SECONDS` | `90` | HTTP client timeout for upstream OCR calls. |
+| `GATEWAY_MAX_QUEUE` | `8` | Number of OCR requests allowed to wait for a worker. Use `0` to disable waiting. |
+| `GATEWAY_UPSTREAM_TIMEOUT_SECONDS` | `120` | HTTP client timeout for upstream OCR calls. |
 | `GATEWAY_SHUTDOWN_TIMEOUT_SECONDS` | `10` | Reserved shutdown timeout setting. |
 | `GATEWAY_READ_HEADER_TIMEOUT_SECONDS` | `10` | HTTP server read-header timeout. |
-| `GATEWAY_DEFAULT_ACCURACY_MODE` | `fast` | Injected `accuracy_mode` query value when the client omits it. |
-| `GATEWAY_DEFAULT_RETRY` | `false` | Injected `retry` query value when the client omits it. |
+| `GATEWAY_DEFAULT_ACCURACY_MODE` | `accurate` | Injected `accuracy_mode` query value when the client omits it. Use `fast` for lower-latency deployments. |
+| `GATEWAY_DEFAULT_RETRY` | `true` | Injected `retry` query value when the client omits it. Use `false` for lower-latency deployments. |
 | `OCR_MAX_FILE_MB` | `15` | Maximum gateway request body size and OCR upload size. |
 
 OCR service settings are configured on the `ocr` Compose service. Common values include `OCR_WORKERS`, `OCR_LOG_LEVEL`, `OCR_KEEP_ALIVE`, `OCR_DEVICE`, `OCR_USE_GPU`, `OCR_GPU_ID`, and `OCR_CACHE_DIR`.
@@ -297,6 +307,8 @@ OCR service settings are configured on the `ocr` Compose service. Common values 
 ## Operational Notes
 
 - The gateway reads the full request body up to `OCR_MAX_FILE_MB` before forwarding it upstream.
+- Accuracy-first defaults are intentionally conservative for single VPS/container deployments: one active OCR request, a small queue, `accurate` mode, retry enabled, and a 120 second upstream timeout.
+- For a faster optional profile, set `GATEWAY_DEFAULT_ACCURACY_MODE=fast` and `GATEWAY_DEFAULT_RETRY=false`.
 - Upstream routing is round-robin when `GATEWAY_OCR_UPSTREAMS` contains more than one URL.
 - The gateway forwards `Content-Type`, `Accept`, and `User-Agent` request headers.
 - Do not expose the OCR service port directly in production; route traffic through the gateway.

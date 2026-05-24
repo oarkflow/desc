@@ -101,7 +101,7 @@ func loadConfig() (config, error) {
 	if maxActive < 1 {
 		maxActive = 1
 	}
-	maxQueue := envInt("GATEWAY_MAX_QUEUE", maxActive*4)
+	maxQueue := envInt("GATEWAY_MAX_QUEUE", 8)
 	if maxQueue < 0 {
 		maxQueue = 0
 	}
@@ -116,10 +116,10 @@ func loadConfig() (config, error) {
 		maxBodyBytes:     int64(maxFileMB) * 1024 * 1024,
 		maxActive:        maxActive,
 		maxQueue:         maxQueue,
-		upstreamTimeout:  time.Duration(envInt("GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 90)) * time.Second,
+		upstreamTimeout:  time.Duration(envInt("GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 120)) * time.Second,
 		shutdownTimeout:  time.Duration(envInt("GATEWAY_SHUTDOWN_TIMEOUT_SECONDS", 10)) * time.Second,
-		defaultAccuracy:  envString("GATEWAY_DEFAULT_ACCURACY_MODE", "fast"),
-		defaultRetry:     envString("GATEWAY_DEFAULT_RETRY", "false"),
+		defaultAccuracy:  envString("GATEWAY_DEFAULT_ACCURACY_MODE", "accurate"),
+		defaultRetry:     envString("GATEWAY_DEFAULT_RETRY", "true"),
 		readHeaderTimout: time.Duration(envInt("GATEWAY_READ_HEADER_TIMEOUT_SECONDS", 10)) * time.Second,
 	}, nil
 }
@@ -340,7 +340,7 @@ func (g *gateway) upstreamURL(r *http.Request) *url.URL {
 }
 
 func withOCRDefaults(values url.Values, accuracyMode, retry string) url.Values {
-	out := make(url.Values, len(values)+2)
+	out := make(url.Values, len(values)+3)
 	for key, vals := range values {
 		out[key] = append([]string(nil), vals...)
 	}
@@ -349,6 +349,9 @@ func withOCRDefaults(values url.Values, accuracyMode, retry string) url.Values {
 	}
 	if out.Get("retry") == "" {
 		out.Set("retry", retry)
+	}
+	if out.Get("values_only") == "" {
+		out.Set("values_only", "true")
 	}
 	return out
 }
