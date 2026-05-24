@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+import cv2
 from PIL import Image
 from fastapi.testclient import TestClient
 
@@ -25,7 +26,7 @@ class OCREndpointTests(unittest.TestCase):
         self.item = {
             "text": "NATIONAL IDENTITY CARD",
             "confidence": 0.99,
-            "box": [],
+            "box": [[0, 0], [2, 0], [2, 1], [0, 1]],
             "source_pass": "bootstrap",
         }
         self.field = ocr_service.OCRField(
@@ -68,6 +69,8 @@ class OCREndpointTests(unittest.TestCase):
         self.assertEqual(payload["values"], {"nid_number": "023-456-2930"})
         self.assertEqual(payload["meta"]["document_type"], "nepali_national_id")
         self.assertEqual(payload["meta"]["document_type_confidence"], 0.75)
+        self.assertIn("objects", payload)
+        self.assertEqual(payload["object_summary"]["text_region_count"], 1)
         self.assertNotIn("request_id", payload)
         self.assertNotIn("fields", payload)
         self.assertNotIn("items", payload)
@@ -83,6 +86,8 @@ class OCREndpointTests(unittest.TestCase):
         self.assertIn("request_id", payload)
         self.assertIn("fields", payload)
         self.assertIn("items", payload)
+        self.assertIn("objects", payload)
+        self.assertIn("object_summary", payload)
 
     def test_values_only_keeps_lightweight_metadata_wrapper(self):
         response = self.post_image("?values_only=true")
@@ -92,7 +97,24 @@ class OCREndpointTests(unittest.TestCase):
         self.assertEqual(payload["document_type"], "nepali_national_id")
         self.assertEqual(payload["values"], {"nid_number": "023-456-2930"})
         self.assertEqual(payload["meta"]["document_type_confidence"], 0.75)
+        self.assertIn("objects", payload)
         self.assertNotIn("items", payload)
+
+    def test_detect_objects_false_returns_empty_detection_output(self):
+        response = self.post_image("?values_only=true&detect_objects=false")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["objects"], [])
+        self.assertEqual(
+            payload["object_summary"],
+            {
+                "has_id_card": False,
+                "id_card_confidence": 0.0,
+                "face_count": 0,
+                "text_region_count": 0,
+            },
+        )
 
     def test_fields_only_keeps_compact_structured_response(self):
         response = self.post_image("?values_only=false&fields_only=true")
@@ -138,6 +160,31 @@ class OCREndpointTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 413)
+
+
+class OpenCVObjectDetectionTests(unittest.TestCase):
+    def test_detects_synthetic_id_card(self):
+        image = np.full((420, 640, 3), 255, dtype=np.uint8)
+        cv2.rectangle(image, (90, 110), (550, 335), (20, 20, 20), 4)
+
+        objects, summary = ocr_service.ObjectDetectionService("opencv").detect(image, [])
+
+        cards = [item for item in objects if item["label"] == "id_card"]
+        self.assertEqual(len(cards), 1)
+        self.assertTrue(summary["has_id_card"])
+        pixel = cards[0]["box"]["pixel"]
+        self.assertGreater(pixel["width"], 400)
+        self.assertGreater(pixel["height"], 180)
+        self.assertGreaterEqual(cards[0]["box"]["normalized"]["x"], 0)
+        self.assertLessEqual(cards[0]["box"]["normalized"]["width"], 1)
+
+    def test_blank_image_has_no_id_card(self):
+        image = np.full((420, 640, 3), 255, dtype=np.uint8)
+
+        objects, summary = ocr_service.ObjectDetectionService("opencv").detect(image, [])
+
+        self.assertEqual([item for item in objects if item["label"] == "id_card"], [])
+        self.assertFalse(summary["has_id_card"])
 
 
 if __name__ == "__main__":

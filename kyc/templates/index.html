@@ -106,6 +106,18 @@
             object-fit: cover;
         }
 
+        .document-preview {
+            display: none;
+            margin: 12px 0;
+        }
+
+        .document-preview.active { display: block; }
+
+        #documentCanvas {
+            background: #111827;
+            object-fit: contain;
+        }
+
         .actions, .challenge, .signals {
             display: flex;
             gap: 10px;
@@ -193,6 +205,9 @@
                 </div>
                 <button id="optionalUploadBtn" class="secondary" type="button">Upload Optional Files</button>
             </div>
+            <div id="documentPreview" class="document-preview">
+                <canvas id="documentCanvas" width="960" height="640"></canvas>
+            </div>
             <pre id="gatewayResult">Upload the document image to extract details.</pre>
         </section>
 
@@ -255,6 +270,9 @@
         const canvas = document.getElementById('canvas');
         const context = canvas.getContext('2d');
         const gatewayResultEl = document.getElementById('gatewayResult');
+        const documentPreviewEl = document.getElementById('documentPreview');
+        const documentCanvas = document.getElementById('documentCanvas');
+        const documentContext = documentCanvas.getContext('2d');
         const statusEl = document.getElementById('status');
         const eventsEl = document.getElementById('events');
         const cameraBtn = document.getElementById('cameraBtn');
@@ -293,6 +311,64 @@
                 const input = document.getElementById(key);
                 if (input && value) input.value = value;
             }
+        }
+
+        function detectionColor(label) {
+            return {
+                id_card: '#22c55e',
+                face: '#38bdf8',
+                text_region: '#f59e0b'
+            }[label] || '#e5e7eb';
+        }
+
+        function detectionLabel(label) {
+            return {
+                id_card: 'ID card',
+                face: 'Face',
+                text_region: 'Text'
+            }[label] || label;
+        }
+
+        function drawDetections(file, detections = []) {
+            if (!file) return;
+            const image = new Image();
+            const url = URL.createObjectURL(file);
+            image.onload = () => {
+                const maxSide = 1200;
+                const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+                documentCanvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+                documentCanvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+                documentContext.clearRect(0, 0, documentCanvas.width, documentCanvas.height);
+                documentContext.drawImage(image, 0, 0, documentCanvas.width, documentCanvas.height);
+                documentContext.lineWidth = Math.max(2, Math.round(documentCanvas.width / 360));
+                documentContext.font = `${Math.max(13, Math.round(documentCanvas.width / 52))}px Inter, sans-serif`;
+                documentContext.textBaseline = 'top';
+
+                for (const detection of detections) {
+                    const pixel = detection.box?.pixel;
+                    if (!pixel) continue;
+                    const x = pixel.x * scale;
+                    const y = pixel.y * scale;
+                    const width = pixel.width * scale;
+                    const height = pixel.height * scale;
+                    if (width <= 0 || height <= 0) continue;
+                    const color = detectionColor(detection.label);
+                    const label = `${detectionLabel(detection.label)} ${Math.round((detection.confidence || 0) * 100)}%`;
+                    const labelWidth = documentContext.measureText(label).width + 12;
+                    const labelHeight = Math.max(20, Math.round(documentCanvas.width / 38));
+
+                    documentContext.strokeStyle = color;
+                    documentContext.fillStyle = color;
+                    documentContext.strokeRect(x, y, width, height);
+                    documentContext.fillRect(x, Math.max(0, y - labelHeight), labelWidth, labelHeight);
+                    documentContext.fillStyle = '#0f172a';
+                    documentContext.fillText(label, x + 6, Math.max(0, y - labelHeight) + 4);
+                }
+                documentPreviewEl.classList.add('active');
+                URL.revokeObjectURL(url);
+            };
+            image.onerror = () => URL.revokeObjectURL(url);
+            image.src = url;
         }
 
         function setStatus(verification) {
@@ -335,7 +411,14 @@
                 document.getElementById('documentType').value = data.suggested_profile.document_type;
             }
             setStatus(data.verification);
-            gatewayResultEl.textContent = JSON.stringify({ side, suggested_profile: data.suggested_profile, gateway: data.gateway }, null, 2);
+            drawDetections(input.files[0], data.objects || data.gateway?.response?.objects || []);
+            gatewayResultEl.textContent = JSON.stringify({
+                side,
+                suggested_profile: data.suggested_profile,
+                objects: data.objects,
+                object_summary: data.object_summary,
+                gateway: data.gateway
+            }, null, 2);
         }
 
         async function uploadOptionalFiles() {

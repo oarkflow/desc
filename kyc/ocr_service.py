@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import mimetypes
 import os
 import re
 import resource
@@ -383,11 +384,212 @@ class OCRResponse(BaseModel):
     width: int
     height: int
     processing_ms: int
+    document_type: str
+    document_type_confidence: float
     full_text: str
     values: dict[str, str]
     fields: dict[str, OCRField]
     items: list[OCRItem]
+    objects: list[dict[str, Any]] = Field(default_factory=list)
+    object_summary: dict[str, Any] = Field(default_factory=dict)
     meta: dict[str, Any] = Field(default_factory=dict)
+
+
+# ----------------------------
+# Object Detection
+# ----------------------------
+
+def empty_object_summary() -> dict[str, Any]:
+    return {
+        "has_id_card": False,
+        "id_card_confidence": 0.0,
+        "face_count": 0,
+        "text_region_count": 0,
+    }
+
+
+def detection_box(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    image_width: int,
+    image_height: int,
+) -> dict[str, Any]:
+    x = max(0.0, min(float(x), float(image_width)))
+    y = max(0.0, min(float(y), float(image_height)))
+    width = max(0.0, min(float(width), float(image_width) - x))
+    height = max(0.0, min(float(height), float(image_height) - y))
+    return {
+        "pixel": {
+            "x": int(round(x)),
+            "y": int(round(y)),
+            "width": int(round(width)),
+            "height": int(round(height)),
+        },
+        "normalized": {
+            "x": round(x / max(image_width, 1), 6),
+            "y": round(y / max(image_height, 1), 6),
+            "width": round(width / max(image_width, 1), 6),
+            "height": round(height / max(image_height, 1), 6),
+        },
+    }
+
+
+def summarize_objects(objects: list[dict[str, Any]]) -> dict[str, Any]:
+    id_card_confidence = max(
+        (float(item.get("confidence") or 0.0) for item in objects if item.get("label") == "id_card"),
+        default=0.0,
+    )
+    return {
+        "has_id_card": id_card_confidence > 0,
+        "id_card_confidence": round(id_card_confidence, 4),
+        "face_count": sum(1 for item in objects if item.get("label") == "face"),
+        "text_region_count": sum(1 for item in objects if item.get("label") == "text_region"),
+    }
+
+
+class ObjectDetectionProvider:
+    provider_name = "base"
+
+    def detect(self, image: np.ndarray, ocr_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+
+class OpenCVObjectDetectionProvider(ObjectDetectionProvider):
+    provider_name = "opencv"
+
+    def __init__(self) -> None:
+        cascade_dir = Path(cv2.data.haarcascades)
+        self.face_cascade = cv2.CascadeClassifier(
+            str(cascade_dir / "haarcascade_frontalface_default.xml")
+        )
+
+    def detect(self, image: np.ndarray, ocr_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        objects: list[dict[str, Any]] = []
+        objects.extend(self.detect_id_cards(image))
+        objects.extend(self.detect_faces(image))
+        objects.extend(self.text_region_detections(image, ocr_items))
+        return objects
+
+    def detect_id_cards(self, image: np.ndarray) -> list[dict[str, Any]]:
+        height, width = image.shape[:2]
+        if height == 0 or width == 0:
+            return []
+
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        candidates: list[dict[str, Any]] = []
+        image_area = float(width * height)
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < image_area * 0.05:
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            polygon = cv2.approxPolyDP(contour, 0.03 * perimeter, True)
+            x, y, card_w, card_h = cv2.boundingRect(polygon)
+            if card_w <= 0 or card_h <= 0:
+                continue
+
+            aspect = card_w / float(card_h)
+            normalized_aspect = aspect if aspect >= 1 else 1 / aspect
+            if normalized_aspect < 1.2 or normalized_aspect > 2.4:
+                continue
+
+            fill_ratio = area / float(card_w * card_h)
+            if fill_ratio < 0.55:
+                continue
+
+            area_ratio = min(area / image_area, 1.0)
+            vertex_bonus = 0.12 if len(polygon) == 4 else 0.0
+            confidence = min(0.99, 0.45 + area_ratio + vertex_bonus + min(fill_ratio, 1.0) * 0.2)
+            points = polygon.reshape(-1, 2).tolist()
+            candidates.append(
+                {
+                    "label": "id_card",
+                    "confidence": round(confidence, 4),
+                    "box": detection_box(x, y, card_w, card_h, width, height),
+                    "polygon": [
+                        {
+                            "x": int(point[0]),
+                            "y": int(point[1]),
+                            "normalized_x": round(float(point[0]) / max(width, 1), 6),
+                            "normalized_y": round(float(point[1]) / max(height, 1), 6),
+                        }
+                        for point in points
+                    ],
+                    "source": self.provider_name,
+                }
+            )
+
+        candidates.sort(key=lambda item: item["confidence"], reverse=True)
+        return candidates[:1]
+
+    def detect_faces(self, image: np.ndarray) -> list[dict[str, Any]]:
+        height, width = image.shape[:2]
+        if self.face_cascade.empty() or height == 0 or width == 0:
+            return []
+
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+        detections = []
+        for x, y, face_w, face_h in faces:
+            detections.append(
+                {
+                    "label": "face",
+                    "confidence": 0.75,
+                    "box": detection_box(x, y, face_w, face_h, width, height),
+                    "source": self.provider_name,
+                }
+            )
+        return detections
+
+    def text_region_detections(
+        self,
+        image: np.ndarray,
+        ocr_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        height, width = image.shape[:2]
+        detections = []
+        for item in ocr_items:
+            bounds = box_bounds(item.get("box") or [])
+            if not bounds:
+                continue
+            x1, y1, x2, y2 = bounds
+            if x2 <= x1 or y2 <= y1:
+                continue
+            detections.append(
+                {
+                    "label": "text_region",
+                    "confidence": round(float(item.get("confidence") or 0.0), 4),
+                    "box": detection_box(x1, y1, x2 - x1, y2 - y1, width, height),
+                    "source": "ocr",
+                }
+            )
+        return detections
+
+
+class ObjectDetectionService:
+    def __init__(self, provider_name: Optional[str] = None) -> None:
+        self.provider_name = (provider_name or os.getenv("OBJECT_DETECTION_PROVIDER", "opencv")).strip().lower()
+        self.provider = self.create_provider(self.provider_name)
+
+    def create_provider(self, provider_name: str) -> ObjectDetectionProvider:
+        if provider_name in {"", "opencv"}:
+            return OpenCVObjectDetectionProvider()
+        if provider_name == "yolo":
+            raise ValueError("YOLO object detection provider is not installed in this build")
+        raise ValueError(f"Unsupported object detection provider: {provider_name}")
+
+    def detect(self, image: np.ndarray, ocr_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        objects = self.provider.detect(image, ocr_items)
+        return objects, summarize_objects(objects)
 
 
 # ----------------------------
@@ -645,11 +847,20 @@ ALLOWED_MIME_TYPES = {
 }
 
 
+def upload_mime_type(file: UploadFile) -> str:
+    content_type = (file.content_type or "").lower()
+    if content_type in ALLOWED_MIME_TYPES:
+        return content_type
+    guessed_type = mimetypes.guess_type(file.filename or "")[0]
+    return (guessed_type or content_type or "unknown").lower()
+
+
 def validate_upload(file: UploadFile, data: bytes) -> None:
-    if file.content_type not in ALLOWED_MIME_TYPES:
+    mime_type = upload_mime_type(file)
+    if mime_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=415,
-            detail=f"Unsupported file type: {file.content_type}",
+            detail=f"Unsupported file type: {file.content_type or 'unknown'}",
         )
 
     max_bytes = settings.MAX_FILE_MB * 1024 * 1024
@@ -3326,6 +3537,7 @@ async def ocr_endpoint(
     file: UploadFile = File(...),
     lang: Optional[str] = Query(None),
     document_type: Optional[str] = Query(None),
+    detect_objects: bool = Query(True),
     upscale: bool = Query(True),
     denoise: bool = Query(False),
     threshold: bool = Query(False),
@@ -3382,26 +3594,47 @@ async def ocr_endpoint(
     engine_lang = lang or settings.OCR_LANG
     fields = extract_structured_fields(extraction_items, processed, profile)
     values = field_values(fields)
+    objects: list[dict[str, Any]] = []
+    object_summary = empty_object_summary()
+    if detect_objects:
+        try:
+            objects, object_summary = ObjectDetectionService().detect(image_rgb, items)
+        except Exception:
+            logger.exception("Object detection failed")
+            object_summary = empty_object_summary()
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     resource_usage = resource_delta(resource_started)
     runtime_meta["device"] = ocr_device()
     runtime_meta["gpu"] = ocr_uses_gpu()
+    runtime_meta["document_type"] = resolved_document_type
+    runtime_meta["document_type_confidence"] = document_type_confidence
     runtime_meta["resource_usage"] = resource_usage
 
     if values_only:
+        meta = {
+            "document_type": resolved_document_type,
+            "document_type_confidence": document_type_confidence,
+        }
+        if detect_objects:
+            meta["object_summary"] = object_summary
         if include_stats:
-            return JSONResponse(
+            meta.update(
                 {
-                    "values": values,
-                    "meta": {
-                        "device": ocr_device(),
-                        "gpu": ocr_uses_gpu(),
-                        "processing_ms": elapsed_ms,
-                        "resource_usage": resource_usage,
-                    },
+                    "device": ocr_device(),
+                    "gpu": ocr_uses_gpu(),
+                    "processing_ms": elapsed_ms,
+                    "resource_usage": resource_usage,
                 }
             )
-        return JSONResponse(values)
+        return JSONResponse(
+            {
+                "document_type": resolved_document_type,
+                "values": values,
+                "objects": objects,
+                "object_summary": object_summary,
+                "meta": meta,
+            }
+        )
 
     if fields_only:
         return JSONResponse(
@@ -3416,6 +3649,8 @@ async def ocr_endpoint(
                     name: field.model_dump()
                     for name, field in fields.items()
                 },
+                "objects": objects,
+                "object_summary": object_summary,
                 "meta": runtime_meta,
             }
         )
@@ -3428,10 +3663,14 @@ async def ocr_endpoint(
         width=original_w,
         height=original_h,
         processing_ms=elapsed_ms,
+        document_type=resolved_document_type,
+        document_type_confidence=document_type_confidence,
         full_text=normalize_text(items),
         values=values,
         fields=fields,
         items=items,
+        objects=objects,
+        object_summary=object_summary,
         meta={
             "engine": "paddleocr",
             "lang": engine_lang,
@@ -3441,6 +3680,7 @@ async def ocr_endpoint(
             "gpu": ocr_uses_gpu(),
             "min_confidence": settings.MIN_CONFIDENCE,
             "internal_min_confidence": settings.INTERNAL_MIN_CONFIDENCE,
+            "object_summary": object_summary,
             **runtime_meta,
             "preprocessing": {
                 "upscale": upscale,

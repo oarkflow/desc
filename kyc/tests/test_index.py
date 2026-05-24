@@ -9,7 +9,30 @@ import kyc.index as index
 
 class FakeOCRGateway:
     def extract(self, *args, **kwargs):
-        return {"engine": "fake", "response": {"full_name": "Test Applicant", "document_number": "N1"}}
+        return {
+            "engine": "fake",
+            "response": {
+                "full_name": "Test Applicant",
+                "document_number": "N1",
+                "objects": [
+                    {
+                        "label": "id_card",
+                        "confidence": 0.91,
+                        "box": {
+                            "pixel": {"x": 1, "y": 2, "width": 100, "height": 60},
+                            "normalized": {"x": 0.01, "y": 0.02, "width": 0.8, "height": 0.5},
+                        },
+                        "source": "opencv",
+                    }
+                ],
+                "object_summary": {
+                    "has_id_card": True,
+                    "id_card_confidence": 0.91,
+                    "face_count": 0,
+                    "text_region_count": 2,
+                },
+            },
+        }
 
 
 class FakeFaceMatchService:
@@ -76,6 +99,12 @@ class ApplicantFlowTests(unittest.TestCase):
         self.assertEqual(verification["face_embeddings"][0]["source_type"], "document")
         self.assertEqual(data["gateway"]["document_type_resolution"]["resolved_document_type"], "national_id")
         self.assertTrue(data["gateway"]["document_type_resolution"]["used_fallback"])
+        self.assertEqual(data["objects"][0]["label"], "id_card")
+        self.assertTrue(data["object_summary"]["has_id_card"])
+        self.assertEqual(
+            verification["documents"][0]["normalized"]["gateway"]["response"]["object_summary"]["text_region_count"],
+            2,
+        )
 
 
 if __name__ == "__main__":

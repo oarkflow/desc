@@ -48,6 +48,22 @@ def uploaded_bytes(name="file"):
     raise ValueError("No upload provided")
 
 
+def gateway_object_detection(gateway_result):
+    response = gateway_result.get("response", {}) if isinstance(gateway_result, dict) else {}
+    if not isinstance(response, dict):
+        return [], {"has_id_card": False, "id_card_confidence": 0.0, "face_count": 0, "text_region_count": 0}
+    objects = response.get("objects") if isinstance(response.get("objects"), list) else []
+    summary = response.get("object_summary") if isinstance(response.get("object_summary"), dict) else {}
+    if not summary and isinstance(response.get("meta"), dict):
+        summary = response["meta"].get("object_summary") or {}
+    return objects, {
+        "has_id_card": bool(summary.get("has_id_card")),
+        "id_card_confidence": float(summary.get("id_card_confidence") or 0.0),
+        "face_count": int(summary.get("face_count") or 0),
+        "text_region_count": int(summary.get("text_region_count") or 0),
+    }
+
+
 def verification_summary(verification):
     safe = dict(verification)
     safe["document_types"] = DOCUMENT_TYPES
@@ -159,7 +175,15 @@ def upload_document(session_id):
             side = "front"
         repo.add_document(session_id, document_type, side, file_info, content_type, gateway_result)
         face_match_service.enroll_source(session_id, "document", file_info["path"], source_id=side)
-        return jsonify({"document": file_info, "gateway": gateway_result, "suggested_profile": suggested_profile, "verification": verification_summary(repo.get_case(session_id))})
+        objects, object_summary = gateway_object_detection(gateway_result)
+        return jsonify({
+            "document": file_info,
+            "gateway": gateway_result,
+            "objects": objects,
+            "object_summary": object_summary,
+            "suggested_profile": suggested_profile,
+            "verification": verification_summary(repo.get_case(session_id)),
+        })
     except ValueError as error:
         return json_error(str(error))
 
