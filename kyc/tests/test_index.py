@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import index
+import kyc.index as index
 
 
 class FakeOCRGateway:

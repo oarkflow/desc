@@ -5,7 +5,7 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 
-from kyc import (
+from kyc.kyc import (
     DOCUMENT_TYPES,
     CallbackDeliveryService,
     FaceMatchService,

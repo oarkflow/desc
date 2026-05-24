@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from blink import APILivenessDetector
+from kyc.blink import APILivenessDetector
 
 
 class DocumentConfigError(ValueError):

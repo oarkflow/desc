@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kyc import DocumentConfigError, DocumentRegistry, FaceMatchService, KYCRepository, LocalEvidenceStorage, OCRGatewayClient, OCRProfileMapper
+from kyc.kyc import DocumentConfigError, DocumentRegistry, FaceMatchService, KYCRepository, LocalEvidenceStorage, OCRGatewayClient, OCRProfileMapper
 
 
 class FakeFaceProvider:

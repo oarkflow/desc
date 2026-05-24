@@ -1,0 +1,10 @@
+.git
+.gitignore
+.dockerignore
+.venv
+__pycache__
+*.py[cod]
+.ocr_cache
+debug_ocr
+testdata
+.DS_Store

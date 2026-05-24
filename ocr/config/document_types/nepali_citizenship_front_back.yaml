@@ -1,0 +1,197 @@
+document_type: nepali_citizenship_front_back
+detect:
+  cues:
+  - text: नेपाली नागरिकताको
+  - text: नाप.न
+  - text: प्रमाणापत्र बाहक
+  min_score: 2
+ocr:
+  timeout_seconds: 10
+  max_passes: 4
+  max_image_side: 1400
+  passes:
+  - name: nepali
+    lang: ne
+    script: devanagari
+    source_kind: printed
+    text_recognition_model: devanagari_PP-OCRv5_mobile_rec
+    preprocessing:
+      upscale: true
+      enhance: true
+      clean_background: false
+      max_image_side: 1400
+  - name: nepali_handwritten_clean
+    mode: retry_only
+    lang: ne
+    script: devanagari
+    source_kind: handwritten
+    text_recognition_model: devanagari_PP-OCRv5_mobile_rec
+    min_confidence: 0.2
+    retry_fields:
+    - citizenship_number
+    - full_name
+    - date_of_birth
+    run_if_below_confidence: 0.9
+    preprocessing:
+      upscale: true
+      denoise: true
+      enhance: true
+      clean_background: true
+  - name: nepali_handwritten_threshold
+    mode: retry_only
+    lang: ne
+    script: devanagari
+    source_kind: handwritten
+    text_recognition_model: devanagari_PP-OCRv5_mobile_rec
+    min_confidence: 0.2
+    retry_fields:
+    - citizenship_number
+    - full_name
+    - date_of_birth
+    run_if_below_confidence: 0.85
+    preprocessing:
+      upscale: true
+      denoise: true
+      enhance: false
+      clean_background: false
+      threshold: true
+fields:
+  citizenship_number:
+    labels:
+    - ना.प्र.नं
+    - नाप्रनं
+    - नाप्र
+    - ना.प्र
+    - नागरिकता नं
+    - नाप.न
+    strategies:
+    - same_line_after_label
+    - same_row_right_of_label
+    - regex_from_full_text
+    validators:
+    - type: regex
+      pattern: '[0-9०-९\-/]+\s*[क-ह]?'
+    regex: \d{5,6}-\d{3,6}
+    normalizers:
+    - nepali_digits_to_ascii
+    - citizenship_number
+  full_name:
+    labels:
+    - नाम थर
+    - नाम, थर
+    - नाम पर
+    - नामपर
+    strategies:
+    - same_row_right_of_label
+    normalizers:
+    - clean_devanagari_name
+    review_source_kinds:
+    - handwritten
+  birth_place:
+    labels:
+    - जन्मस्थान
+    - जन्म स्थान
+    - जल्मस्थान
+    strategies:
+    - same_row_right_of_label
+    - gazetteer_match
+    gazetteer: data/nepal_admin_areas.yaml
+    gazetteer_hint_fields:
+    - permanent_address
+    review_source_kinds:
+    - handwritten
+  permanent_address:
+    labels:
+    - स्थायी वासस्थान
+    - स्थायी ठेगाना
+    - क्यायी वासस्षान
+    - ठेगाना
+    strategies:
+    - same_row_right_of_label
+    - gazetteer_match
+    gazetteer: data/nepal_admin_areas.yaml
+    review_source_kinds:
+    - handwritten
+  date_of_birth:
+    labels:
+    - जन्ममिति
+    - जन्म मिति
+    - ज्ममिति
+    strategies:
+    - row_components
+    - same_row_right_of_label
+    components:
+    - साल
+    - महिना
+    - गते
+    normalizers:
+    - nepali_digits_to_ascii
+    - bs_date_components
+  father_name:
+    labels:
+    - बाबुको नाम थर
+    - बाबुको नाम
+    - बाबको नाम
+    - बावको नाम
+    strategies:
+    - same_row_right_of_label
+    normalizers:
+    - clean_devanagari_name
+    - person_name_repair
+    consistency_field: full_name
+    review_source_kinds:
+    - handwritten
+  mother_name:
+    labels:
+    - आमाको नाम थर
+    - आमाको नाम
+    - जामाको नाम
+    strategies:
+    - same_row_right_of_label
+    normalizers:
+    - clean_devanagari_name
+    review_source_kinds:
+    - handwritten
+  certificate_holder:
+    labels:
+    - प्रमाणपत्र बाहकको नाम
+    - प्रमाणापत्र बाहकको नाम
+    - प्रमाणपत्र बाहक
+    - प्रमाणापत्र बाहक
+    strategies:
+    - same_line_after_label
+    - same_row_right_of_label
+    normalizers:
+    - clean_devanagari_name
+    same_as_field: full_name
+    review_source_kinds:
+    - handwritten
+  citizenship_type:
+    labels:
+    - नागरिकताको किसिम
+    - नागरिंकताको किसित्र
+    - किसिम
+    - किसित्र
+    strategies:
+    - same_line_after_label
+    - same_row_right_of_label
+  issuing_officer:
+    labels:
+    - प्रमाणपत्र दिने अधिकारी
+    - नाम, थर
+    - नाम थर
+    - नाम, यर
+    strategies:
+    - same_row_right_of_label
+    - below_label
+    normalizers:
+    - clean_devanagari_name
+  issue_date:
+    labels:
+    - मिति
+    strategies:
+    - regex_from_full_text
+    - same_line_after_label
+    regex: \b[0-9०-९]{3,4}[./\-][0-9०-९]{1,2}[./\-][0-9०-९]{1,2}\b
+    normalizers:
+    - nepali_digits_to_ascii
