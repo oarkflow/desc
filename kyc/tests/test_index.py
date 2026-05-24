@@ -27,7 +27,7 @@ class FakeFaceMatchService:
         return []
 
 
-class AdminEvidenceTests(unittest.TestCase):
+class ApplicantFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -41,62 +41,21 @@ class AdminEvidenceTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_liveness_evidence_uses_result_json_content_type(self):
-        session_id = index.repo.create_demo_session()["id"]
-        file_info = index.storage.save_bytes(session_id, "liveness", "proof.webm", b"webm-bytes")
-        index.repo.add_liveness(
-            session_id,
-            file_info,
-            {
-                "risk_status": "pass",
-                "content_type": "video/webm",
-                "challenge": ["blink"],
-                "completed": {"blink": True},
-            },
-        )
-        case = index.repo.get_case(session_id)
-        item_id = case["liveness_checks"][0]["id"]
+    def test_root_starts_applicant_session_without_admin_login(self):
+        response = self.client.get("/", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/kyc/", response.headers["Location"])
 
-        with self.client.session_transaction() as session:
-            session["admin_authenticated"] = True
-            session["admin_tenant_id"] = case["session"]["tenant_id"]
-            session["admin_email"] = "admin@example.com"
-            session["admin_role"] = "owner"
+        follow = self.client.get(response.headers["Location"])
+        self.assertEqual(follow.status_code, 200)
+        self.assertIn("KYC Verification", follow.get_data(as_text=True))
 
-        response = self.client.get(f"/admin/evidence/liveness/{item_id}")
-        try:
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.mimetype, "video/webm")
-            self.assertEqual(response.get_data(), b"webm-bytes")
-        finally:
-            response.close()
-
-    def test_create_session_requires_valid_tenant_api_key(self):
+    def test_create_session_does_not_require_tenant_api_key(self):
         response = self.client.post("/api/kyc/sessions")
-        self.assertEqual(response.status_code, 401)
-
-        response = self.client.post("/api/kyc/sessions", headers={"X-Tenant-API-Key": "dev-tenant-key"})
         self.assertEqual(response.status_code, 201)
         data = response.get_json()
         self.assertIn("/kyc/", data["applicant_url"])
-        self.assertEqual(data["case"]["session"]["id"], data["session_id"])
-
-    def test_admin_cases_are_tenant_scoped(self):
-        default_session = index.repo.create_session()
-        tenant = index.repo.create_tenant("tenant-b", "Tenant B")
-        other_session = index.repo.create_session(tenant["id"])
-
-        with self.client.session_transaction() as session:
-            session["admin_authenticated"] = True
-            session["admin_tenant_id"] = default_session["tenant_id"]
-            session["admin_email"] = "admin@example.com"
-            session["admin_role"] = "owner"
-
-        response = self.client.get("/admin/cases")
-        body = response.get_data(as_text=True)
-
-        self.assertIn(default_session["id"], body)
-        self.assertNotIn(other_session["id"], body)
+        self.assertEqual(data["verification"]["session"]["id"], data["session_id"])
 
     def test_document_upload_stores_face_embedding(self):
         created = index.repo.create_session()
@@ -112,8 +71,8 @@ class AdminEvidenceTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        case = response.get_json()["case"]
-        self.assertEqual(case["face_embeddings"][0]["source_type"], "document")
+        verification = response.get_json()["verification"]
+        self.assertEqual(verification["face_embeddings"][0]["source_type"], "document")
 
 
 if __name__ == "__main__":

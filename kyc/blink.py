@@ -12,7 +12,8 @@ class APILivenessDetector:
         self.EAR_THRESHOLD = ear_threshold
         self.CONSECUTIVE_FRAMES = consecutive_frames
 
-        model_path = Path(model_path or "models/face_landmarker.task")
+        default_model_path = Path(__file__).resolve().parent / "models" / "face_landmarker.task"
+        model_path = Path(model_path or default_model_path)
         if not model_path.exists():
             raise FileNotFoundError(
                 f"Missing MediaPipe face model: {model_path}. Run `make setup` to download it."

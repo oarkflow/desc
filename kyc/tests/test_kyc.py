@@ -93,11 +93,6 @@ class KYCPersistenceTests(unittest.TestCase):
         self.assertEqual(json.loads(document["normalized_json"])["gateway"]["engine"], "http_gateway")
         self.assertTrue(Path(document["file_path"]).exists())
 
-    def test_submit_requires_all_required_evidence(self):
-        session_id = self.repo.create_session()["id"]
-        with self.assertRaises(ValueError):
-            self.repo.submit(session_id)
-
     def test_tenant_api_key_authenticates_active_tenant(self):
         tenant = self.repo.create_tenant("bank-a", "Bank A")
         self.repo.add_api_key(tenant["id"], "bank-a-secret", "primary")
@@ -112,44 +107,7 @@ class KYCPersistenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.repo.authenticate_api_key("missing-secret")
 
-    def test_queues_callback_jobs_on_submit_and_decision(self):
-        session_id = self.repo.create_demo_session()["id"]
-        tenant_id = self.repo.get_session(session_id)["tenant_id"]
-        self.repo.add_callback_endpoint(tenant_id, "CRM", "https://example.test/kyc", ["kyc.submitted", "kyc.approved"])
-        file_info = self.storage.save_bytes(session_id, "documents", "front.jpg", b"document-bytes")
-        self.repo.add_document(session_id, "national_id", "front", file_info, "image/jpeg", {"response": {"values": {"document_number": "N1"}}})
-        self.repo.add_liveness(
-            session_id,
-            {},
-            {
-                "risk_status": "pass",
-                "challenge": ["look_center", "blink"],
-                "completed": {"look_center": True, "blink": True},
-                "blink_count": 1,
-                "face_detection_rate": 0.8,
-                "movement_detected": False,
-                "frames_processed": 10,
-                "backend": "test",
-            },
-        )
-
-        submitted = self.repo.submit(session_id)
-        self.repo.decide(session_id, "approved", "Looks good", reviewer="reviewer@example.com")
-        case = self.repo.get_case(session_id)
-
-        self.assertEqual(submitted["session"]["applicant_status"], "submitted")
-        self.assertEqual([job["event_type"] for job in case["callback_jobs"]], ["kyc.submitted", "kyc.approved"])
-
-    def test_admin_decision_updates_state_and_audit(self):
-        session_id = self.repo.create_session()["id"]
-        self.repo.decide(session_id, "resubmission_requested", "Document is blurry")
-
-        case = self.repo.get_case(session_id)
-        self.assertEqual(case["session"]["applicant_status"], "resubmission_requested")
-        self.assertEqual(case["decisions"][0]["note"], "Document is blurry")
-        self.assertTrue(any(event["event_type"] == "admin_decision" for event in case["audit_events"]))
-
-    def test_demo_session_can_submit_with_document_and_liveness(self):
+    def test_demo_session_tracks_document_and_liveness_without_review_submit(self):
         session_id = self.repo.create_demo_session()["id"]
         file_info = self.storage.save_bytes(session_id, "documents", "front.jpg", b"document-bytes")
         self.repo.add_document(session_id, "national_id", "front", file_info, "image/jpeg", {"response": {"values": {"document_number": "N1"}}})
@@ -168,9 +126,10 @@ class KYCPersistenceTests(unittest.TestCase):
             },
         )
 
-        case = self.repo.submit(session_id)
-        self.assertEqual(case["session"]["applicant_status"], "submitted")
-        self.assertEqual(case["session"]["review_status"], "auto_checks_passed")
+        case = self.repo.get_case(session_id)
+        self.assertEqual(case["session"]["applicant_status"], "draft")
+        self.assertEqual(case["documents"][0]["document_type"], "national_id")
+        self.assertEqual(case["liveness_checks"][0]["status"], "pass")
 
     def test_face_search_is_tenant_scoped(self):
         session_a = self.repo.create_session()
@@ -207,18 +166,6 @@ class KYCPersistenceTests(unittest.TestCase):
             result = service.enroll_source(self.repo.create_session()["id"], "document", image_path)
 
         self.assertEqual(result["status"], "needs_manual_review")
-
-    def test_callback_payload_includes_face_search_results(self):
-        session_a = self.repo.create_session()
-        session_b = self.repo.create_session()
-        self.repo.add_face_embedding(session_a["id"], "selfie", [1, 0, 0], "fake", "test")
-        self.repo.add_face_embedding(session_b["id"], "selfie", [0.99, 0.01, 0], "fake", "test")
-        FaceMatchService(self.repo, FakeFaceProvider()).search_tenant_gallery(session_a["id"])
-
-        payload = self.repo.callback_payload("kyc.submitted", self.repo.get_case(session_a["id"]))
-
-        self.assertEqual(payload["face_search_results"][0]["candidate_session_id"], session_b["id"])
-
 
 class OCRProfileMapperTests(unittest.TestCase):
     def test_maps_gateway_values_to_profile_fields(self):

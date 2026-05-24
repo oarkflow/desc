@@ -1,0 +1,303 @@
+# KYC OCR Gateway
+
+The gateway is a small Go HTTP service that fronts the Python OCR service. It adds API-key authentication, request size limits, queue/concurrency control, round-robin upstream selection, default OCR query options, health checks, and Prometheus-style metrics.
+
+By default Docker Compose exposes the gateway on `http://localhost:8000` and keeps the OCR service private on the Docker network.
+
+## Requirements
+
+- Docker and Docker Compose for the recommended runtime.
+- A configured `GATEWAY_API_KEY` for protected deployments.
+- Input files must be images accepted by the OCR service, sent as `multipart/form-data`.
+- Default maximum request body size is `15 MB`, controlled by `OCR_MAX_FILE_MB`.
+- CPU mode works by default. GPU mode requires a Docker runtime with GPU support and the `docker-compose.gpu.yml` override.
+
+## Run
+
+```sh
+GATEWAY_API_KEY=change-me docker compose up --build
+```
+
+GPU mode:
+
+```sh
+GATEWAY_API_KEY=change-me docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+Health check:
+
+```sh
+curl http://localhost:8000/healthz
+```
+
+## HTTP Endpoints
+
+### `GET /admin`
+
+Serves the gateway-hosted OCR admin console for managing document type YAML, global OCR settings, data files, and upload previews.
+
+If `GATEWAY_API_KEY` is set, open the UI with the key once to set an admin cookie:
+
+```sh
+http://localhost:8000/admin?api_key=change-me
+```
+
+The UI can:
+
+- List, create, edit, duplicate, and soft-delete document types in `config/document_types`.
+- Edit `config/document_profiles.yaml`, including extraction rules.
+- Edit `.yaml`, `.yml`, and `.txt` files in `data`.
+- Upload a document preview through multipart form upload and view OCR JSON plus image overlays.
+- Validate YAML through the OCR service before saving.
+- Save files atomically with timestamped backups and request OCR config reloads.
+
+### `GET /healthz`
+
+Returns gateway health. This endpoint does not require an API key.
+
+Response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### `GET /metrics`
+
+Returns gateway metrics in Prometheus text format. If `GATEWAY_API_KEY` is set, the request must include `X-API-Key`.
+
+Request:
+
+```sh
+curl -H "X-API-Key: change-me" http://localhost:8000/metrics
+```
+
+Response content type:
+
+```text
+text/plain; version=0.0.4; charset=utf-8
+```
+
+Exported metrics include:
+
+- `kyc_gateway_requests_total`
+- `kyc_gateway_ocr_requests_total`
+- `kyc_gateway_ocr_success_total`
+- `kyc_gateway_ocr_errors_total`
+- `kyc_gateway_auth_failures_total`
+- `kyc_gateway_queue_rejected_total`
+- `kyc_gateway_request_too_large_total`
+- `kyc_gateway_upstream_errors_total`
+- `kyc_gateway_active_ocr`
+- `kyc_gateway_queued_ocr`
+- `kyc_gateway_ocr_latency_ms_total`
+- `kyc_gateway_queue_wait_ms_total`
+- `kyc_gateway_responses_total{status="..."}`
+
+### `POST /ocr`
+
+Proxies an OCR request to the upstream OCR service. If `GATEWAY_API_KEY` is set, the request must include `X-API-Key`.
+
+Headers:
+
+- `X-API-Key: <key>` when gateway auth is enabled.
+- `Content-Type: multipart/form-data`.
+- `Accept` is forwarded upstream when provided.
+
+Multipart fields:
+
+- `file`: required image upload.
+
+Query parameters forwarded to the OCR service:
+
+| Parameter | Default at gateway | Description |
+| --- | --- | --- |
+| `document_type` | auto-detect upstream | Optional document profile hint. Known profiles include `nepali_citizenship_old_front`, `nepali_citizenship_front_back`, `nepali_citizenship_mixed_language`, `nepali_national_id`, and `generic_devanagari_document`. |
+| `lang` | OCR service default, usually `ne` | OCR language override. |
+| `accuracy_mode` | `fast` | Gateway injects this when omitted. OCR supports profile-dependent behavior for `fast` and `accurate`. |
+| `retry` | `false` | Gateway injects this when omitted. Set `true` for retry passes where supported. |
+| `values_only` | OCR service default, `true` | Returns only extracted values by default. Set `false` for the full OCR payload. |
+| `fields_only` | `false` | Returns structured field details without raw OCR items when true and `values_only=false`. |
+| `include_stats` | `false` | Adds processing metadata when `values_only=true`. |
+| `upscale` | `true` | Image preprocessing toggle. |
+| `denoise` | `false` | Image preprocessing toggle. |
+| `threshold` | `false` | Image preprocessing toggle. |
+| `crop_border` | `true` | Image preprocessing toggle. |
+| `enhance` | `true` | Image preprocessing toggle. |
+| `clean_background` | OCR service setting | Image preprocessing toggle. |
+
+Minimal request:
+
+```sh
+curl -X POST "http://localhost:8000/ocr?document_type=nepali_national_id" \
+  -H "X-API-Key: change-me" \
+  -F "file=@testdata/national-id.webp"
+```
+
+Full response request:
+
+```sh
+curl -X POST "http://localhost:8000/ocr?document_type=nepali_national_id&values_only=false&accuracy_mode=accurate&retry=true" \
+  -H "X-API-Key: change-me" \
+  -F "file=@testdata/national-id.webp"
+```
+
+Default `values_only=true` response:
+
+```json
+{
+  "nid_number": "123-456-7890",
+  "full_name": "Example Name",
+  "date_of_birth": "1990-01-01"
+}
+```
+
+`values_only=true&include_stats=true` response:
+
+```json
+{
+  "values": {
+    "nid_number": "123-456-7890"
+  },
+  "meta": {
+    "device": "cpu",
+    "gpu": false,
+    "processing_ms": 1200,
+    "resource_usage": {
+      "wall_ms": 1200,
+      "cpu_ms": 1800,
+      "max_rss_mb": 512.4
+    }
+  }
+}
+```
+
+`values_only=false` response shape:
+
+```json
+{
+  "request_id": "uuid",
+  "filename": "national-id.webp",
+  "mime_type": "image/webp",
+  "file_size_bytes": 123456,
+  "width": 1200,
+  "height": 800,
+  "processing_ms": 1200,
+  "full_text": "recognized text",
+  "values": {
+    "nid_number": "123-456-7890"
+  },
+  "fields": {
+    "nid_number": {
+      "value": "123-456-7890",
+      "confidence": 0.94,
+      "source_text": "ID No 123-456-7890",
+      "raw_value": "123-456-7890",
+      "normalized_value": "123-456-7890",
+      "requires_review": false,
+      "evidence": [],
+      "details": {}
+    }
+  },
+  "items": [
+    {
+      "text": "ID No 123-456-7890",
+      "confidence": 0.94,
+      "box": [[0, 0], [100, 0], [100, 20], [0, 20]],
+      "source_pass": "english"
+    }
+  ],
+  "meta": {
+    "engine": "paddleocr",
+    "lang": "ne",
+    "device": "cpu",
+    "document_type": "nepali_national_id",
+    "document_type_confidence": 1,
+    "gpu": false,
+    "preprocessing": {
+      "upscale": true,
+      "denoise": false,
+      "threshold": false,
+      "crop_border": true,
+      "enhance": true,
+      "clean_background": false
+    }
+  }
+}
+```
+
+## Error Responses
+
+Gateway-generated errors are JSON:
+
+```json
+{
+  "error": "unauthorized"
+}
+```
+
+Common gateway statuses:
+
+| Status | Cause |
+| --- | --- |
+| `400` | Request is not `multipart/form-data` or the body cannot be read. |
+| `401` | `GATEWAY_API_KEY` is set and `X-API-Key` is missing or incorrect. |
+| `404` | Unknown route. |
+| `413` | Request body is larger than `OCR_MAX_FILE_MB`. |
+| `429` | OCR concurrency and queue are full. |
+| `502` | Gateway could not create or complete an upstream OCR request. |
+| `504` | Upstream OCR request timed out. |
+
+The gateway passes upstream OCR response headers, status codes, and bodies through for completed upstream requests.
+
+## Admin API
+
+All admin API routes are under `/admin/api` and require the same gateway API key when `GATEWAY_API_KEY` is configured.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /admin/api/config` | Load document type summaries, data file summaries, and global profile YAML. |
+| `GET /admin/api/document-types` | List document type YAML files. |
+| `GET /admin/api/document-types/{id}` | Read one document type YAML file. |
+| `POST /admin/api/document-types` | Create a document type from JSON `{ "name": "...", "content": "..." }`. |
+| `PUT /admin/api/document-types/{id}` | Validate and save document type YAML. |
+| `POST /admin/api/document-types/{id}/duplicate` | Duplicate a document type using JSON `{ "id": "new_id" }`. |
+| `DELETE /admin/api/document-types/{id}` | Move the document type file to backups and remove it from active config. |
+| `GET /admin/api/profiles` | Read `document_profiles.yaml`. |
+| `PUT /admin/api/profiles` | Validate and save `document_profiles.yaml`. |
+| `GET /admin/api/data` | List editable data files. |
+| `GET /admin/api/data/{name}` | Read a data file. |
+| `PUT /admin/api/data/{name}` | Save a data file. |
+| `POST /admin/api/preview` | Multipart preview upload; forwards `file` and OCR options to upstream `/ocr`. |
+| `POST /admin/api/reload` | Request OCR config/data cache reload. |
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GATEWAY_PORT` | `8000` | Gateway listen port inside the container. Compose maps `${GATEWAY_PORT:-8000}` on the host to container port `8000`. |
+| `GATEWAY_OCR_UPSTREAM` | `http://ocr:8000` | Single upstream OCR service URL. |
+| `GATEWAY_OCR_UPSTREAMS` | value of `GATEWAY_OCR_UPSTREAM` | Comma-separated upstream OCR service URLs for round-robin routing. |
+| `GATEWAY_API_KEY` | empty | Enables API-key auth when set. Requests must send `X-API-Key`. |
+| `GATEWAY_CONFIG_DIR` | `config` | Directory containing `document_profiles.yaml` and `document_types`. |
+| `GATEWAY_DATA_DIR` | `data` | Directory containing editable OCR data files. |
+| `GATEWAY_BACKUP_DIR` | `.gateway_backups` | Directory for timestamped backups before admin writes/deletes. |
+| `GATEWAY_MAX_ACTIVE` | `OCR_WORKERS` or `1` | Maximum concurrent OCR proxy requests. |
+| `GATEWAY_MAX_QUEUE` | `GATEWAY_MAX_ACTIVE * 4` in the binary, `4` in Compose | Number of OCR requests allowed to wait for a worker. Use `0` to disable waiting. |
+| `GATEWAY_UPSTREAM_TIMEOUT_SECONDS` | `90` | HTTP client timeout for upstream OCR calls. |
+| `GATEWAY_SHUTDOWN_TIMEOUT_SECONDS` | `10` | Reserved shutdown timeout setting. |
+| `GATEWAY_READ_HEADER_TIMEOUT_SECONDS` | `10` | HTTP server read-header timeout. |
+| `GATEWAY_DEFAULT_ACCURACY_MODE` | `fast` | Injected `accuracy_mode` query value when the client omits it. |
+| `GATEWAY_DEFAULT_RETRY` | `false` | Injected `retry` query value when the client omits it. |
+| `OCR_MAX_FILE_MB` | `15` | Maximum gateway request body size and OCR upload size. |
+
+OCR service settings are configured on the `ocr` Compose service. Common values include `OCR_WORKERS`, `OCR_LOG_LEVEL`, `OCR_KEEP_ALIVE`, `OCR_DEVICE`, `OCR_USE_GPU`, `OCR_GPU_ID`, and `OCR_CACHE_DIR`.
+
+## Operational Notes
+
+- The gateway reads the full request body up to `OCR_MAX_FILE_MB` before forwarding it upstream.
+- Upstream routing is round-robin when `GATEWAY_OCR_UPSTREAMS` contains more than one URL.
+- The gateway forwards `Content-Type`, `Accept`, and `User-Agent` request headers.
+- Do not expose the OCR service port directly in production; route traffic through the gateway.
+- Set `GATEWAY_MAX_ACTIVE` close to the number of OCR workers or available GPU/CPU capacity to avoid overloading the OCR service.

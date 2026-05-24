@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="981b39c6-d523-42f9-8fbd-10fe4b4e96ff" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/ocr/.dockerignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/.env" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/Dockerfile" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/Dockerfile.gateway" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/cmd/gateway/admin.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/cmd/gateway/main.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/cmd/gateway/main_test.go" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/cmd/gateway/static/admin.css" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/cmd/gateway/static/admin.js" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/cmd/gateway/templates/admin.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/config/document_profiles.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/config/document_types/generic_devanagari_document.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/config/document_types/nepali_citizenship_front_back.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/config/document_types/nepali_citizenship_mixed_language.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/config/document_types/nepali_citizenship_old_front.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/config/document_types/nepali_national_id.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_admin_areas.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_admin_areas_en.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_admin_areas_ne.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_districts_en.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_districts_ne.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_provinces_en.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_provinces_ne.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_zones_en.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/data/nepal_zones_ne.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/docker-compose.gpu.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/docker-compose.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/docker-entrypoint.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/go.mod" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/ocr_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/testdata/citizenship-front-back.jpg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/testdata/citizenship.jpg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/testdata/national-id.webp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ocr/testdata/nepali-citizenship-card.png.webp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/kyc/Makefile" beforeDir="false" afterPath="$PROJECT_DIR$/kyc/Makefile" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/kyc/blink.py" beforeDir="false" afterPath="$PROJECT_DIR$/kyc/blink.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/kyc/kyc.py" beforeDir="false" afterPath="$PROJECT_DIR$/kyc/kyc.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="CopilotPersistence">
+    <persistenceIdMap>
+      <entry key="_/Users/sujit/Sites/Projects/blinking" value="3EA2sfA9znQ7oJ444ND5neLYtpz" />
+    </persistenceIdMap>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="RESET_MODE" value="HARD" />
+  </component>
+  <component name="ProjectCodeStyleSettingsMigration">
+    <option name="version" value="2" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 5
+}]]></component>
+  <component name="ProjectId" id="3EA2sfA9znQ7oJ444ND5neLYtpz" />
+  <component name="ProjectViewState">
+    <option name="autoscrollFromSource" value="true" />
+    <option name="autoscrollToSource" value="true" />
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+    <option name="showModules" value="false" />
+    <option name="showVisibilityIcons" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "main",
+    "kotlin-language-version-configured": "true",
+    "last_opened_file_path": "/Users/sujit/Sites/Projects/blinking"
+  }
+}]]></component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-jdk-9823dce3aa75-bf35d07a577b-intellij.indexing.shared.core-IU-252.23892.409" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="981b39c6-d523-42f9-8fbd-10fe4b4e96ff" name="Changes" comment="" />
+      <created>1779607262445</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1779607262445</updated>
+    </task>
+    <servers />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="github-copilot-workspace">
+    <instructionFileLocations>
+      <option value=".github/instructions" />
+    </instructionFileLocations>
+    <promptFileLocations>
+      <option value=".github/prompts" />
+    </promptFileLocations>
+  </component>
+</project>

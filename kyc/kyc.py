@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import hmac
 import json
 import mimetypes
 import os
@@ -13,7 +12,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from werkzeug.security import check_password_hash, generate_password_hash
 
 from kyc.blink import APILivenessDetector
 
@@ -24,7 +22,8 @@ class DocumentConfigError(ValueError):
 
 class DocumentRegistry:
     def __init__(self, config_path=None):
-        self.config_path = Path(config_path or os.environ.get("DOCUMENT_TYPES_CONFIG", "config/document_types.yaml"))
+        default_config_path = Path(__file__).resolve().parent / "config" / "document_types.yaml"
+        self.config_path = Path(config_path or os.environ.get("DOCUMENT_TYPES_CONFIG", default_config_path))
         self.document_types = self.load(self.config_path)
 
     def load(self, path):
@@ -95,18 +94,7 @@ class DocumentRegistry:
 DOCUMENT_REGISTRY = DocumentRegistry()
 DOCUMENT_TYPES = DOCUMENT_REGISTRY.public_types()
 
-APPLICANT_STATUSES = {"draft", "submitted", "resubmission_requested", "approved", "rejected"}
-REVIEW_STATUSES = {
-    "pending_review",
-    "auto_checks_passed",
-    "needs_review",
-    "failed_checks",
-    "manual_approved",
-    "manual_rejected",
-}
 CHALLENGE_ACTIONS = ["blink", "turn_left", "turn_right", "look_center"]
-CALLBACK_EVENTS = {"kyc.submitted", "kyc.approved", "kyc.rejected", "kyc.resubmission_requested"}
-ADMIN_ROLES = {"owner", "admin", "reviewer"}
 DEMO_PROFILE = {
     "full_name": "Aarav Shrestha",
     "date_of_birth": "1994-04-18",
@@ -221,44 +209,6 @@ class KYCRepository:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(tenant_id) REFERENCES tenants(id)
                 );
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tenant_id TEXT NOT NULL,
-                    email TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(tenant_id) REFERENCES tenants(id)
-                );
-                CREATE TABLE IF NOT EXISTS callback_endpoints (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tenant_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    url TEXT NOT NULL,
-                    secret TEXT,
-                    events_json TEXT NOT NULL,
-                    delivery_mode TEXT NOT NULL DEFAULT 'json',
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(tenant_id) REFERENCES tenants(id)
-                );
-                CREATE TABLE IF NOT EXISTS callback_jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tenant_id TEXT NOT NULL,
-                    endpoint_id INTEGER,
-                    session_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_attempt_at TEXT,
-                    last_error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(tenant_id) REFERENCES tenants(id),
-                    FOREIGN KEY(endpoint_id) REFERENCES callback_endpoints(id)
-                );
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     tenant_id TEXT,
@@ -354,16 +304,6 @@ class KYCRepository:
                     candidate_session_id TEXT,
                     score REAL NOT NULL,
                     rank INTEGER NOT NULL,
-                    decision_status TEXT NOT NULL DEFAULT 'unreviewed',
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS decisions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    tenant_id TEXT,
-                    decision TEXT NOT NULL,
-                    note TEXT,
-                    reviewer TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -387,7 +327,6 @@ class KYCRepository:
             "selfies": {"tenant_id": "TEXT"},
             "liveness_checks": {"tenant_id": "TEXT"},
             "face_matches": {"tenant_id": "TEXT"},
-            "decisions": {"tenant_id": "TEXT"},
             "audit_events": {"tenant_id": "TEXT"},
         }
         for table, columns in required_columns.items():
@@ -405,14 +344,11 @@ class KYCRepository:
         api_key = os.environ.get("DEFAULT_TENANT_API_KEY", "dev-tenant-key")
         if api_key and not self.find_api_key(api_key):
             self.add_api_key(tenant["id"], api_key, "default")
-        admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
-        if admin_email and not self.get_user_by_email(admin_email):
-            self.add_user(tenant["id"], admin_email, os.environ.get("ADMIN_PASSWORD", "admin"), "owner")
         self.backfill_default_tenant(tenant["id"])
 
     def backfill_default_tenant(self, tenant_id):
         with self.connect() as conn:
-            for table in ("sessions", "profiles", "documents", "selfies", "liveness_checks", "face_matches", "decisions", "audit_events"):
+            for table in ("sessions", "profiles", "documents", "selfies", "liveness_checks", "face_matches", "audit_events"):
                 conn.execute(f"UPDATE {table} SET tenant_id = ? WHERE tenant_id IS NULL", (tenant_id,))
             rows = conn.execute("SELECT id FROM sessions WHERE session_token IS NULL OR session_token = ''").fetchall()
             for row in rows:
@@ -468,29 +404,6 @@ class KYCRepository:
         if not key or key["status"] != "active" or key["tenant_status"] != "active":
             raise ValueError("Invalid tenant API key")
         return self.get_tenant(key["tenant_id"])
-
-    def add_user(self, tenant_id, email, password, role="reviewer", status="active"):
-        if role not in ADMIN_ROLES:
-            raise ValueError("Invalid role")
-        with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO users(tenant_id, email, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (tenant_id, email.lower().strip(), generate_password_hash(password), role, status, now_iso()),
-            )
-
-    def get_user_by_email(self, email):
-        with self.connect() as conn:
-            return row_to_dict(conn.execute("SELECT * FROM users WHERE email = ?", ((email or "").lower().strip(),)).fetchone())
-
-    def authenticate_user(self, email, password):
-        user = self.get_user_by_email(email)
-        if not user or user["status"] != "active" or not check_password_hash(user["password_hash"], password or ""):
-            raise ValueError("Invalid email or password")
-        tenant = self.get_tenant(user["tenant_id"])
-        if not tenant or tenant["status"] != "active":
-            raise ValueError("Tenant is not active")
-        user["tenant"] = tenant
-        return user
 
     def tenant_id_for_session(self, session_id):
         session = self.get_session(session_id)
@@ -548,21 +461,6 @@ class KYCRepository:
         if not session or not session_token or session["session_token"] != session_token:
             raise ValueError("Invalid KYC session token")
         return session
-
-    def update_status(self, session_id, applicant_status=None, review_status=None):
-        session = self.get_session(session_id)
-        if not session:
-            raise ValueError("Unknown KYC session")
-        applicant_status = applicant_status or session["applicant_status"]
-        review_status = review_status or session["review_status"]
-        if applicant_status not in APPLICANT_STATUSES or review_status not in REVIEW_STATUSES:
-            raise ValueError("Invalid status")
-        with self.connect() as conn:
-            conn.execute(
-                "UPDATE sessions SET applicant_status = ?, review_status = ?, updated_at = ? WHERE id = ?",
-                (applicant_status, review_status, now_iso(), session_id),
-            )
-        self.audit(session_id, "status_updated", {"applicant_status": applicant_status, "review_status": review_status})
 
     def save_profile(self, session_id, data):
         tenant_id = self.tenant_id_for_session(session_id)
@@ -756,8 +654,8 @@ class KYCRepository:
                 conn.execute(
                     """
                     INSERT INTO face_search_results(tenant_id, session_id, query_embedding_id, candidate_embedding_id,
-                    candidate_session_id, score, rank, decision_status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'unreviewed', ?)
+                    candidate_session_id, score, rank, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         tenant_id,
@@ -772,77 +670,6 @@ class KYCRepository:
                 )
         if matches:
             self.audit(session_id, "face_search_completed", {"query_embedding_id": query_embedding_id, "matches": len(matches)})
-
-    def submit(self, session_id):
-        case = self.get_case(session_id)
-        missing = []
-        if not case["profile"]:
-            missing.append("profile")
-        if not case["documents"]:
-            missing.append("document")
-        if not case["liveness_checks"]:
-            missing.append("liveness")
-        if missing:
-            raise ValueError(f"Cannot submit before completing: {', '.join(missing)}")
-        review_status = self.compute_review_status(case)
-        with self.connect() as conn:
-            conn.execute(
-                "UPDATE sessions SET applicant_status = ?, review_status = ?, submitted_at = ?, updated_at = ? WHERE id = ?",
-                ("submitted", review_status, now_iso(), now_iso(), session_id),
-            )
-        self.audit(session_id, "session_submitted", {"review_status": review_status})
-        submitted = self.get_case(session_id)
-        self.queue_callbacks(session_id, "kyc.submitted", submitted)
-        return submitted
-
-    def compute_review_status(self, case):
-        warnings = []
-        usable_liveness = [check for check in case["liveness_checks"] if check["status"] in {"pass", "warn"}]
-        if not usable_liveness:
-            return "failed_checks"
-        if not any(check["status"] == "pass" for check in usable_liveness):
-            warnings.append("liveness")
-        if case["documents"] and case["selfies"] and (not case["face_matches"] or case["face_matches"][-1]["status"] != "pass"):
-            warnings.append("face_match")
-        return "needs_review" if warnings else "auto_checks_passed"
-
-    def decide(self, session_id, decision, note, reviewer="admin"):
-        if decision not in {"approved", "rejected", "resubmission_requested"}:
-            raise ValueError("Invalid decision")
-        review_status = "manual_approved" if decision == "approved" else "manual_rejected"
-        if decision == "resubmission_requested":
-            review_status = "needs_review"
-        tenant_id = self.tenant_id_for_session(session_id)
-        with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO decisions(session_id, tenant_id, decision, note, reviewer, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, tenant_id, decision, note, reviewer, now_iso()),
-            )
-            conn.execute(
-                "UPDATE sessions SET applicant_status = ?, review_status = ?, updated_at = ? WHERE id = ?",
-                (decision, review_status, now_iso(), session_id),
-            )
-        self.audit(session_id, "admin_decision", {"decision": decision, "note": note})
-        self.queue_callbacks(session_id, f"kyc.{decision}", self.get_case(session_id))
-
-    def list_cases(self, tenant_id=None):
-        with self.connect() as conn:
-            where = ""
-            params = []
-            if tenant_id:
-                where = "WHERE s.tenant_id = ?"
-                params.append(tenant_id)
-            rows = conn.execute(
-                f"""
-                SELECT s.*, p.full_name, p.document_type, p.document_number
-                FROM sessions s
-                LEFT JOIN profiles p ON p.session_id = s.id
-                {where}
-                ORDER BY s.created_at DESC
-                """,
-                params,
-            ).fetchall()
-            return [row_to_dict(row) for row in rows]
 
     def get_case(self, session_id, tenant_id=None):
         with self.connect() as conn:
@@ -859,9 +686,7 @@ class KYCRepository:
             matches = [row_to_dict(row) for row in conn.execute("SELECT * FROM face_matches WHERE session_id = ? ORDER BY id", (session_id,))]
             embeddings = [row_to_dict(row) for row in conn.execute("SELECT * FROM face_embeddings WHERE session_id = ? ORDER BY id", (session_id,))]
             search_results = [row_to_dict(row) for row in conn.execute("SELECT * FROM face_search_results WHERE session_id = ? ORDER BY rank", (session_id,))]
-            decisions = [row_to_dict(row) for row in conn.execute("SELECT * FROM decisions WHERE session_id = ? ORDER BY id", (session_id,))]
             audit = [row_to_dict(row) for row in conn.execute("SELECT * FROM audit_events WHERE session_id = ? ORDER BY id", (session_id,))]
-            callbacks = [row_to_dict(row) for row in conn.execute("SELECT * FROM callback_jobs WHERE session_id = ? ORDER BY id", (session_id,))]
         return {
             "tenant": tenant,
             "session": session,
@@ -872,133 +697,8 @@ class KYCRepository:
             "face_matches": matches,
             "face_embeddings": embeddings,
             "face_search_results": search_results,
-            "decisions": decisions,
             "audit_events": audit,
-            "callback_jobs": callbacks,
         }
-
-    def add_callback_endpoint(self, tenant_id, name, url, events=None, secret=None, delivery_mode="json", status="active"):
-        selected = events or sorted(CALLBACK_EVENTS)
-        unknown = set(selected) - CALLBACK_EVENTS
-        if unknown:
-            raise ValueError(f"Unsupported callback events: {', '.join(sorted(unknown))}")
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO callback_endpoints(tenant_id, name, url, secret, events_json, delivery_mode, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (tenant_id, name, url, secret, json.dumps(selected), delivery_mode, status, now_iso()),
-            )
-
-    def queue_callbacks(self, session_id, event_type, case=None):
-        if event_type not in CALLBACK_EVENTS:
-            return []
-        case = case or self.get_case(session_id)
-        tenant_id = case["session"]["tenant_id"]
-        payload = self.callback_payload(event_type, case)
-        ts = now_iso()
-        queued = []
-        with self.connect() as conn:
-            endpoints = conn.execute(
-                "SELECT * FROM callback_endpoints WHERE tenant_id = ? AND status = 'active'",
-                (tenant_id,),
-            ).fetchall()
-            for endpoint in endpoints:
-                events = json.loads(endpoint["events_json"] or "[]")
-                if event_type not in events:
-                    continue
-                cursor = conn.execute(
-                    """
-                    INSERT INTO callback_jobs(tenant_id, endpoint_id, session_id, event_type, payload_json, status,
-                    attempts, next_attempt_at, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-                    """,
-                    (tenant_id, endpoint["id"], session_id, event_type, json.dumps(payload), ts, ts, ts),
-                )
-                queued.append(cursor.lastrowid)
-        if queued:
-            self.audit(session_id, "callbacks_queued", {"event_type": event_type, "job_ids": queued})
-        return queued
-
-    def callback_payload(self, event_type, case):
-        def evidence(items):
-            return [
-                {
-                    "id": item["id"],
-                    "filename": item.get("original_filename"),
-                    "content_type": item.get("content_type"),
-                    "sha256": item.get("sha256"),
-                    "size": item.get("size"),
-                    "local_path": item.get("file_path"),
-                }
-                for item in items
-            ]
-
-        return {
-            "event": event_type,
-            "tenant": {
-                "id": case["tenant"]["id"],
-                "slug": case["tenant"]["slug"],
-                "name": case["tenant"]["name"],
-            } if case.get("tenant") else None,
-            "session": {
-                "id": case["session"]["id"],
-                "applicant_status": case["session"]["applicant_status"],
-                "review_status": case["session"]["review_status"],
-                "created_at": case["session"]["created_at"],
-                "submitted_at": case["session"].get("submitted_at"),
-            },
-            "profile": case.get("profile"),
-            "documents": evidence(case.get("documents", [])),
-            "selfies": evidence(case.get("selfies", [])),
-            "liveness": [json.loads(item["result_json"]) for item in case.get("liveness_checks", [])],
-            "face_matches": [json.loads(item["details_json"]) for item in case.get("face_matches", [])],
-            "face_search_results": case.get("face_search_results", []),
-            "decisions": case.get("decisions", []),
-        }
-
-    def pending_callback_jobs(self, limit=20, tenant_id=None):
-        tenant_filter = ""
-        params = [now_iso()]
-        if tenant_id:
-            tenant_filter = "AND j.tenant_id = ?"
-            params.append(tenant_id)
-        params.append(limit)
-        with self.connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT j.*, e.url, e.secret, e.delivery_mode
-                FROM callback_jobs j
-                LEFT JOIN callback_endpoints e ON e.id = j.endpoint_id
-                WHERE j.status IN ('pending', 'retrying')
-                  AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= ?)
-                  {tenant_filter}
-                ORDER BY j.created_at
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-            return [row_to_dict(row) for row in rows]
-
-    def mark_callback_success(self, job_id):
-        with self.connect() as conn:
-            conn.execute(
-                "UPDATE callback_jobs SET status = 'delivered', attempts = attempts + 1, last_error = NULL, updated_at = ? WHERE id = ?",
-                (now_iso(), job_id),
-            )
-
-    def mark_callback_failure(self, job_id, error, retry_seconds=300):
-        retry_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + retry_seconds))
-        with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE callback_jobs
-                SET status = 'retrying', attempts = attempts + 1, next_attempt_at = ?, last_error = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (retry_at, str(error)[:500], now_iso(), job_id),
-            )
 
     def delete_evidence(self, session_id):
         with self.connect() as conn:
@@ -1122,73 +822,6 @@ class OCRProfileMapper:
             if value and any(key.endswith(f".{alias}") for alias in aliases):
                 return value
         return None
-
-
-class CallbackDeliveryService:
-    def __init__(self, repository, timeout_seconds=None):
-        self.repository = repository
-        self.timeout_seconds = float(timeout_seconds or os.environ.get("CALLBACK_TIMEOUT_SECONDS", 20))
-
-    def deliver_pending(self, limit=20, tenant_id=None):
-        results = []
-        for job in self.repository.pending_callback_jobs(limit, tenant_id=tenant_id):
-            try:
-                self.deliver(job)
-                self.repository.mark_callback_success(job["id"])
-                results.append({"job_id": job["id"], "status": "delivered"})
-            except ValueError as error:
-                self.repository.mark_callback_failure(job["id"], str(error))
-                results.append({"job_id": job["id"], "status": "retrying", "error": str(error)})
-        return results
-
-    def deliver(self, job):
-        if not job.get("url"):
-            raise ValueError("Callback endpoint is missing")
-        try:
-            import requests
-        except Exception as error:
-            raise ValueError("requests is required to deliver callbacks") from error
-
-        payload = json.loads(job["payload_json"])
-        headers = self.headers(job, payload)
-        if job.get("delivery_mode") == "multipart":
-            response = self.post_multipart(requests, job["url"], headers, payload)
-        else:
-            response = requests.post(job["url"], json=payload, headers=headers, timeout=self.timeout_seconds)
-        if not response.ok:
-            raise ValueError(f"Callback returned {response.status_code}: {response.text[:200]}")
-
-    def headers(self, job, payload):
-        headers = {"X-KYC-Event": job["event_type"]}
-        secret = job.get("secret")
-        if secret:
-            body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            headers["X-KYC-Signature"] = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        return headers
-
-    def post_multipart(self, requests, url, headers, payload):
-        files = []
-        handles = []
-        try:
-            for group in ("documents", "selfies"):
-                for item in payload.get(group, []):
-                    path = item.get("local_path")
-                    if not path or not Path(path).exists():
-                        continue
-                    handle = Path(path).open("rb")
-                    handles.append(handle)
-                    files.append(("files", (item.get("filename") or Path(path).name, handle, item.get("content_type") or "application/octet-stream")))
-            response = requests.post(
-                url,
-                data={"payload": json.dumps(payload)},
-                files=files,
-                headers=headers,
-                timeout=self.timeout_seconds,
-            )
-            return response
-        finally:
-            for handle in handles:
-                handle.close()
 
 
 class FaceRecognitionProvider:

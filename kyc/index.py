@@ -1,13 +1,10 @@
 import json
 import os
-from functools import wraps
-from pathlib import Path
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
 
 from kyc.kyc import (
     DOCUMENT_TYPES,
-    CallbackDeliveryService,
     FaceMatchService,
     KYCRepository,
     LivenessService,
@@ -32,27 +29,6 @@ def json_error(message, status=400):
     return jsonify({"error": message}), status
 
 
-def require_admin(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if not session.get("admin_authenticated"):
-            return redirect(url_for("admin_login", next=request.path))
-        return view(*args, **kwargs)
-
-    return wrapped
-
-
-def current_admin():
-    if not session.get("admin_authenticated"):
-        return None
-    return {
-        "id": session.get("admin_user_id"),
-        "tenant_id": session.get("admin_tenant_id"),
-        "email": session.get("admin_email"),
-        "role": session.get("admin_role"),
-    }
-
-
 def applicant_session(session_id):
     token = request.headers.get("X-Session-Token") or request.args.get("token") or session.get("applicant_session_token")
     return repo.verify_session_token(session_id, token)
@@ -72,10 +48,10 @@ def uploaded_bytes(name="file"):
     raise ValueError("No upload provided")
 
 
-def case_summary(case):
-    safe = dict(case)
+def verification_summary(verification):
+    safe = dict(verification)
     safe["document_types"] = DOCUMENT_TYPES
-    for collection in ("documents", "selfies", "liveness_checks", "face_matches", "face_embeddings", "face_search_results", "audit_events", "decisions", "callback_jobs"):
+    for collection in ("documents", "selfies", "liveness_checks", "face_matches", "face_embeddings", "face_search_results", "audit_events"):
         safe[collection] = [dict(item) for item in safe[collection]]
     for document in safe["documents"]:
         try:
@@ -89,7 +65,12 @@ def case_summary(case):
 
 @app.route("/")
 def index():
-    return redirect(url_for("admin_login"))
+    session_token = session.get("applicant_session_token")
+    if session_token and repo.get_session_by_token(session_token):
+        return redirect(url_for("applicant_kyc", session_token=session_token))
+    created = repo.create_demo_session()
+    session["applicant_session_token"] = created["session_token"]
+    return redirect(url_for("applicant_kyc", session_token=created["session_token"]))
 
 
 @app.route("/kyc/<session_token>")
@@ -111,27 +92,23 @@ def document_types():
 
 @app.route("/api/kyc/sessions", methods=["POST"])
 def create_kyc_session():
-    try:
-        api_key = request.headers.get("X-Tenant-API-Key") or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        tenant = repo.authenticate_api_key(api_key)
-        created = repo.create_session(tenant["id"])
-        applicant_url = url_for("applicant_kyc", session_token=created["session_token"], _external=True)
-        return jsonify({"session_id": created["id"], "session_token": created["session_token"], "applicant_url": applicant_url, "case": case_summary(repo.get_case(created["id"]))}), 201
-    except ValueError as error:
-        return json_error(str(error), 401)
+    created = repo.create_demo_session()
+    session["applicant_session_token"] = created["session_token"]
+    applicant_url = url_for("applicant_kyc", session_token=created["session_token"], _external=True)
+    return jsonify({"session_id": created["id"], "session_token": created["session_token"], "applicant_url": applicant_url, "verification": verification_summary(repo.get_case(created["id"]))}), 201
 
 
 @app.route("/api/kyc/demo-session", methods=["POST"])
 def create_demo_kyc_session():
     created = repo.create_demo_session()
-    return jsonify({"session_id": created["id"], "session_token": created["session_token"], "applicant_url": url_for("applicant_kyc", session_token=created["session_token"], _external=True), "case": case_summary(repo.get_case(created["id"]))})
+    return jsonify({"session_id": created["id"], "session_token": created["session_token"], "applicant_url": url_for("applicant_kyc", session_token=created["session_token"], _external=True), "verification": verification_summary(repo.get_case(created["id"]))})
 
 
 @app.route("/api/kyc/sessions/<session_id>")
 def get_kyc_session(session_id):
     try:
         applicant_session(session_id)
-        return jsonify(case_summary(repo.get_case(session_id)))
+        return jsonify(verification_summary(repo.get_case(session_id)))
     except ValueError as error:
         return json_error(str(error), 404)
 
@@ -142,7 +119,7 @@ def save_profile(session_id):
         applicant_session(session_id)
         data = request.get_json(silent=True) or request.form.to_dict()
         repo.save_profile(session_id, data)
-        return jsonify(case_summary(repo.get_case(session_id)))
+        return jsonify(verification_summary(repo.get_case(session_id)))
     except ValueError as error:
         return json_error(str(error))
 
@@ -167,7 +144,7 @@ def upload_document(session_id):
         suggested_profile = ocr_mapper.map(gateway_result, document_type=document_type)
         repo.add_document(session_id, document_type, side, file_info, content_type, gateway_result)
         face_match_service.enroll_source(session_id, "document", file_info["path"], source_id=side)
-        return jsonify({"document": file_info, "gateway": gateway_result, "suggested_profile": suggested_profile, "case": case_summary(repo.get_case(session_id))})
+        return jsonify({"document": file_info, "gateway": gateway_result, "suggested_profile": suggested_profile, "verification": verification_summary(repo.get_case(session_id))})
     except ValueError as error:
         return json_error(str(error))
 
@@ -180,7 +157,7 @@ def upload_selfie(session_id):
         file_info = storage.save_bytes(session_id, "selfies", filename, data)
         repo.add_selfie(session_id, file_info, content_type)
         face_match_service.enroll_source(session_id, "selfie", file_info["path"])
-        return jsonify({"selfie": file_info, "case": case_summary(repo.get_case(session_id))})
+        return jsonify({"selfie": file_info, "verification": verification_summary(repo.get_case(session_id))})
     except ValueError as error:
         return json_error(str(error))
 
@@ -189,8 +166,8 @@ def upload_selfie(session_id):
 def get_challenge(session_id):
     try:
         applicant_session(session_id)
-        case = repo.get_case(session_id)
-        return jsonify({"challenge": json.loads(case["session"]["challenge_json"])})
+        verification = repo.get_case(session_id)
+        return jsonify({"challenge": json.loads(verification["session"]["challenge_json"])})
     except ValueError as error:
         return json_error(str(error), 404)
 
@@ -200,8 +177,8 @@ def process_liveness_frame(session_id):
     try:
         applicant_session(session_id)
         data, _, _ = uploaded_bytes()
-        case = repo.get_case(session_id)
-        challenge = json.loads(case["session"]["challenge_json"])
+        verification = repo.get_case(session_id)
+        challenge = json.loads(verification["session"]["challenge_json"])
         result = liveness_service.analyze_frame_bytes(data, session_id=session_id, challenge=challenge)
         repo.audit(session_id, "liveness_frame_processed", result)
         return jsonify(result)
@@ -213,8 +190,8 @@ def process_liveness_frame(session_id):
 def complete_liveness(session_id):
     try:
         applicant_session(session_id)
-        case = repo.get_case(session_id)
-        challenge = json.loads(case["session"]["challenge_json"])
+        verification = repo.get_case(session_id)
+        challenge = json.loads(verification["session"]["challenge_json"])
         result = liveness_service.finalize_session(session_id, challenge)
         video_check = repo.latest_liveness_with_file(session_id)
         if video_check:
@@ -228,7 +205,7 @@ def complete_liveness(session_id):
             result = merged
         else:
             repo.add_liveness(session_id, {}, result)
-        return jsonify({"liveness": result, "case": case_summary(repo.get_case(session_id))})
+        return jsonify({"liveness": result, "verification": verification_summary(repo.get_case(session_id))})
     except ValueError as error:
         return json_error(str(error))
 
@@ -239,126 +216,14 @@ def upload_liveness_video(session_id):
         applicant_session(session_id)
         data, filename, content_type = uploaded_bytes()
         file_info = storage.save_bytes(session_id, "liveness", filename or "liveness.webm", data)
-        case = repo.get_case(session_id)
-        challenge = json.loads(case["session"]["challenge_json"])
+        verification = repo.get_case(session_id)
+        challenge = json.loads(verification["session"]["challenge_json"])
         result = liveness_service.analyze_video_file(file_info["path"], challenge)
         result["content_type"] = content_type
         repo.add_liveness(session_id, file_info, result)
-        return jsonify({"liveness": result, "case": case_summary(repo.get_case(session_id))})
+        return jsonify({"liveness": result, "verification": verification_summary(repo.get_case(session_id))})
     except ValueError as error:
         return json_error(str(error))
-
-
-@app.route("/api/kyc/sessions/<session_id>/submit", methods=["POST"])
-def submit_kyc_session(session_id):
-    try:
-        applicant_session(session_id)
-        match = face_match_service.compare_session(session_id)
-        repo.add_face_match(session_id, match)
-        face_match_service.search_tenant_gallery(session_id)
-        submitted = repo.submit(session_id)
-        return jsonify(case_summary(submitted))
-    except ValueError as error:
-        return json_error(str(error))
-
-
-@app.route("/admin/login", methods=["GET", "POST"])
-def admin_login():
-    error = None
-    if request.method == "POST":
-        email = request.form.get("email", "")
-        password = request.form.get("password", "")
-        try:
-            user = repo.authenticate_user(email, password)
-            session["admin_authenticated"] = True
-            session["admin_user_id"] = user["id"]
-            session["admin_tenant_id"] = user["tenant_id"]
-            session["admin_email"] = user["email"]
-            session["admin_role"] = user["role"]
-            return redirect(request.args.get("next") or url_for("admin_cases"))
-        except ValueError as auth_error:
-            error = str(auth_error)
-    return render_template("admin_login.html", error=error)
-
-
-@app.route("/admin/logout", methods=["POST"])
-@require_admin
-def admin_logout():
-    session.clear()
-    return redirect(url_for("admin_login"))
-
-
-@app.route("/admin/cases")
-@require_admin
-def admin_cases():
-    admin = current_admin()
-    return render_template("admin_cases.html", cases=repo.list_cases(admin["tenant_id"]), document_types=DOCUMENT_TYPES, admin=admin)
-
-
-@app.route("/admin/cases/<session_id>")
-@require_admin
-def admin_case(session_id):
-    try:
-        admin = current_admin()
-        return render_template("admin_case.html", case=case_summary(repo.get_case(session_id, admin["tenant_id"])), document_types=DOCUMENT_TYPES, admin=admin)
-    except ValueError:
-        abort(404)
-
-
-@app.route("/admin/cases/<session_id>/decision", methods=["POST"])
-@require_admin
-def admin_decision(session_id):
-    try:
-        admin = current_admin()
-        repo.get_case(session_id, admin["tenant_id"])
-        repo.decide(session_id, request.form.get("decision", ""), request.form.get("note", ""), reviewer=admin["email"])
-        return redirect(url_for("admin_case", session_id=session_id))
-    except ValueError as error:
-        return json_error(str(error))
-
-
-@app.route("/admin/cases/<session_id>/delete-evidence", methods=["POST"])
-@require_admin
-def admin_delete_evidence(session_id):
-    admin = current_admin()
-    repo.get_case(session_id, admin["tenant_id"])
-    storage.delete_session(session_id)
-    repo.delete_evidence(session_id)
-    return redirect(url_for("admin_case", session_id=session_id))
-
-
-@app.route("/admin/callbacks/deliver", methods=["POST"])
-@require_admin
-def admin_deliver_callbacks():
-    admin = current_admin()
-    if admin["role"] == "reviewer":
-        return json_error("Reviewer role cannot deliver callbacks", 403)
-    result = CallbackDeliveryService(repo).deliver_pending(limit=int(request.form.get("limit", 20)), tenant_id=admin["tenant_id"])
-    return jsonify({"results": result})
-
-
-@app.route("/admin/evidence/<kind>/<int:item_id>")
-@require_admin
-def admin_evidence(kind, item_id):
-    table_map = {"documents": "documents", "selfies": "selfies", "liveness": "liveness_checks"}
-    table = table_map.get(kind)
-    if not table:
-        abort(404)
-    with repo.connect() as conn:
-        if kind == "liveness":
-            row = conn.execute("SELECT file_path, result_json FROM liveness_checks WHERE id = ? AND tenant_id = ?", (item_id, current_admin()["tenant_id"])).fetchone()
-            content_type = "video/webm"
-            if row:
-                try:
-                    content_type = json.loads(row["result_json"]).get("content_type") or content_type
-                except json.JSONDecodeError:
-                    pass
-        else:
-            row = conn.execute(f"SELECT file_path, content_type FROM {table} WHERE id = ? AND tenant_id = ?", (item_id, current_admin()["tenant_id"])).fetchone()
-            content_type = row["content_type"] if row else None
-    if not row or not row["file_path"] or not Path(row["file_path"]).exists():
-        abort(404)
-    return send_file(row["file_path"], mimetype=content_type or "application/octet-stream")
 
 
 if __name__ == "__main__":

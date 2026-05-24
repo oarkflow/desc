@@ -156,18 +156,17 @@
 <body>
     <header>
         <h1>KYC Verification</h1>
-        <div id="tenantLabel">Complete document verification, profile confirmation, and liveness checks.</div>
+        <div id="tenantLabel">Complete the form, upload your document, and finish liveness detection.</div>
         <div class="steps">
-            <div id="stepDocument" class="step active">1. Document</div>
-            <div id="stepProfile" class="step">2. Profile</div>
+            <div id="stepProfile" class="step active">1. Form</div>
+            <div id="stepDocument" class="step">2. Document OCR</div>
             <div id="stepLiveness" class="step">3. Liveness</div>
-            <div id="stepSubmit" class="step">4. Submit</div>
         </div>
     </header>
 
     <main>
         <section>
-            <h2>Document And Photo</h2>
+            <h2>Document OCR</h2>
             <div class="upload-row">
                 <div>
                     <label for="documentType">Document type</label>
@@ -219,7 +218,6 @@
                 <button id="cameraBtn" type="button" disabled>Start Webcam</button>
                 <button id="livenessBtn" type="button" disabled>Start Detection</button>
                 <button id="finishBtn" type="button" disabled>Finish Liveness</button>
-                <button id="submitBtn" type="button" disabled>Submit KYC</button>
             </div>
             <div id="challenge" class="challenge"></div>
             <video id="webcam" autoplay muted playsinline></video>
@@ -243,7 +241,7 @@
     <script>
         const sessionId = '{{ session_id }}';
         const sessionToken = '{{ session_token }}';
-        let sessionCase = null;
+        let verificationState = null;
         let stream = null;
         let frameTimer = null;
         let recorder = null;
@@ -262,7 +260,6 @@
         const cameraBtn = document.getElementById('cameraBtn');
         const livenessBtn = document.getElementById('livenessBtn');
         const finishBtn = document.getElementById('finishBtn');
-        const submitBtn = document.getElementById('submitBtn');
 
         function actionLabel(action) {
             return { blink: 'Blink once', turn_left: 'Turn left', turn_right: 'Turn right', look_center: 'Look center' }[action] || action;
@@ -283,7 +280,7 @@
         }
 
         function renderChallenge(completed = {}) {
-            const challenge = sessionCase?.session?.challenge || [];
+            const challenge = verificationState?.session?.challenge || [];
             document.getElementById('challenge').innerHTML = challenge.map(action => {
                 const cls = completed[action] ? 'pill done' : 'pill';
                 return `<span class="${cls}">${actionLabel(action)}</span>`;
@@ -298,27 +295,24 @@
             }
         }
 
-        function setStatus(caseData) {
-            sessionCase = caseData;
-            if (caseData.tenant) document.getElementById('tenantLabel').textContent = `${caseData.tenant.name} verification`;
+        function setStatus(verification) {
+            verificationState = verification;
+            if (verification.tenant) document.getElementById('tenantLabel').textContent = `${verification.tenant.name} verification`;
             renderChallenge();
-            fillProfile(caseData.profile);
-            documentUploaded = caseData.documents.length > 0 || documentUploaded;
-            profileSaved = Boolean(caseData.profile) || profileSaved;
-            livenessComplete = caseData.liveness_checks.length > 0 || livenessComplete;
-            setStep('stepDocument', documentUploaded ? 'done' : 'active');
-            setStep('stepProfile', profileSaved ? 'done' : documentUploaded ? 'active' : '');
+            fillProfile(verification.profile);
+            documentUploaded = verification.documents.length > 0 || documentUploaded;
+            profileSaved = Boolean(verification.profile) || profileSaved;
+            livenessComplete = verification.liveness_checks.length > 0 || livenessComplete;
+            setStep('stepProfile', profileSaved ? 'done' : 'active');
+            setStep('stepDocument', documentUploaded ? 'done' : profileSaved ? 'active' : '');
             setStep('stepLiveness', livenessComplete ? 'done' : profileSaved ? 'active' : '');
-            setStep('stepSubmit', caseData.session.applicant_status === 'submitted' ? 'done' : livenessComplete ? 'active' : '');
             cameraBtn.disabled = !profileSaved;
-            submitBtn.disabled = !livenessComplete || caseData.session.applicant_status === 'submitted';
             statusEl.textContent = JSON.stringify({
-                session_id: caseData.session.id,
-                applicant_status: caseData.session.applicant_status,
-                review_status: caseData.session.review_status,
-                documents: caseData.documents.length,
-                selfies: caseData.selfies.length,
-                liveness_checks: caseData.liveness_checks.length
+                session_id: verification.session.id,
+                documents: verification.documents.length,
+                selfies: verification.selfies.length,
+                liveness_checks: verification.liveness_checks.length,
+                complete: Boolean(profileSaved && documentUploaded && livenessComplete)
             }, null, 2);
         }
 
@@ -337,7 +331,7 @@
             gatewayResultEl.textContent = 'Sending document to OCR Gateway...';
             const data = await api(`/api/kyc/sessions/${sessionId}/documents`, { method: 'POST', body: form });
             fillProfile(data.suggested_profile);
-            setStatus(data.case);
+            setStatus(data.verification);
             gatewayResultEl.textContent = JSON.stringify({ side, suggested_profile: data.suggested_profile, gateway: data.gateway }, null, 2);
         }
 
@@ -349,7 +343,7 @@
                 const form = new FormData();
                 form.append('file', photo.files[0]);
                 const data = await api(`/api/kyc/sessions/${sessionId}/selfie`, { method: 'POST', body: form });
-                setStatus(data.case);
+                setStatus(data.verification);
             }
         }
 
@@ -384,7 +378,7 @@
             const form = new FormData();
             form.append('file', blob, 'selfie.jpg');
             const data = await api(`/api/kyc/sessions/${sessionId}/selfie`, { method: 'POST', body: form });
-            setStatus(data.case);
+            setStatus(data.verification);
         }
 
         function startRecorder() {
@@ -463,23 +457,12 @@
                 const videoData = await stopRecorderAndUpload();
                 const data = await api(`/api/kyc/sessions/${sessionId}/liveness/complete`, { method: 'POST' });
                 livenessComplete = true;
-                setStatus(data.case);
+                setStatus(data.verification);
                 eventsEl.textContent = JSON.stringify({ video_liveness: videoData?.liveness, live_frame_liveness: data.liveness }, null, 2);
             } finally {
                 stopCamera();
             }
         });
-        submitBtn.addEventListener('click', async () => {
-            submitBtn.disabled = true;
-            try {
-                const data = await api(`/api/kyc/sessions/${sessionId}/submit`, { method: 'POST' });
-                setStatus(data);
-            } catch (error) {
-                statusEl.textContent += `\n\nSubmit failed: ${error.message}`;
-                submitBtn.disabled = false;
-            }
-        });
-
         loadSession().catch(error => statusEl.textContent = error.message);
     </script>
 </body>
