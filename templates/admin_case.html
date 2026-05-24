@@ -193,6 +193,12 @@
             {% else %}
             <p>No face match score yet.</p>
             {% endfor %}
+            <h3>Duplicate Search</h3>
+            {% for result in case.face_search_results %}
+            <pre>Rank {{ result.rank }} candidate {{ result.candidate_session_id }} score {{ result.score }} status {{ result.decision_status }}</pre>
+            {% else %}
+            <p>No duplicate face candidates.</p>
+            {% endfor %}
             <h3>Audit</h3>
             <pre>{% for event in case.audit_events %}{{ event.created_at }} {{ event.event_type }} {{ event.details_json }}
 {% endfor %}</pre>

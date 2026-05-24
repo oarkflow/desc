@@ -1,6 +1,7 @@
 mediapipe<0.10.22
 opencv-python
 numpy
+onnxruntime
 
 flask
 requests

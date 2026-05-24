@@ -1,6 +1,8 @@
 import base64
 import hashlib
+import hmac
 import json
+import mimetypes
 import os
 import random
 import re
@@ -11,6 +13,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from blink import APILivenessDetector
 
@@ -102,6 +105,8 @@ REVIEW_STATUSES = {
     "manual_rejected",
 }
 CHALLENGE_ACTIONS = ["blink", "turn_left", "turn_right", "look_center"]
+CALLBACK_EVENTS = {"kyc.submitted", "kyc.approved", "kyc.rejected", "kyc.resubmission_requested"}
+ADMIN_ROLES = {"owner", "admin", "reviewer"}
 DEMO_PROFILE = {
     "full_name": "Aarav Shrestha",
     "date_of_birth": "1994-04-18",
@@ -122,6 +127,29 @@ def now_iso():
 
 def row_to_dict(row):
     return dict(row) if row else None
+
+
+def hash_secret(secret):
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def normalize_vector(vector):
+    array = np.asarray(vector, dtype=np.float32)
+    norm = float(np.linalg.norm(array))
+    if norm == 0:
+        return array.tolist()
+    return (array / norm).astype(float).tolist()
+
+
+def cosine_similarity(vector_a, vector_b):
+    a = np.asarray(vector_a, dtype=np.float32)
+    b = np.asarray(vector_b, dtype=np.float32)
+    if a.size == 0 or b.size == 0:
+        return 0.0
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denom == 0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
 def decode_data_url(data_url):
@@ -175,8 +203,66 @@ class KYCRepository:
         with self.connect() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    slug TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS tenant_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    label TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+                );
+                CREATE TABLE IF NOT EXISTS callback_endpoints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    secret TEXT,
+                    events_json TEXT NOT NULL,
+                    delivery_mode TEXT NOT NULL DEFAULT 'json',
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+                );
+                CREATE TABLE IF NOT EXISTS callback_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    endpoint_id INTEGER,
+                    session_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+                    FOREIGN KEY(endpoint_id) REFERENCES callback_endpoints(id)
+                );
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
+                    tenant_id TEXT,
+                    session_token TEXT,
                     applicant_status TEXT NOT NULL,
                     review_status TEXT NOT NULL,
                     challenge_json TEXT NOT NULL,
@@ -186,6 +272,7 @@ class KYCRepository:
                 );
                 CREATE TABLE IF NOT EXISTS profiles (
                     session_id TEXT PRIMARY KEY,
+                    tenant_id TEXT,
                     full_name TEXT NOT NULL,
                     date_of_birth TEXT NOT NULL,
                     nationality TEXT NOT NULL,
@@ -202,6 +289,7 @@ class KYCRepository:
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     document_type TEXT NOT NULL,
                     side TEXT NOT NULL,
                     file_path TEXT NOT NULL,
@@ -216,6 +304,7 @@ class KYCRepository:
                 CREATE TABLE IF NOT EXISTS selfies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     file_path TEXT NOT NULL,
                     original_filename TEXT NOT NULL,
                     content_type TEXT,
@@ -226,6 +315,7 @@ class KYCRepository:
                 CREATE TABLE IF NOT EXISTS liveness_checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     file_path TEXT,
                     sha256 TEXT,
                     result_json TEXT NOT NULL,
@@ -235,14 +325,42 @@ class KYCRepository:
                 CREATE TABLE IF NOT EXISTS face_matches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     score REAL,
                     status TEXT NOT NULL,
                     details_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS face_embeddings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT,
+                    vector_json TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    quality_score REAL,
+                    face_box_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS face_search_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    query_embedding_id INTEGER,
+                    candidate_embedding_id INTEGER,
+                    candidate_session_id TEXT,
+                    score REAL NOT NULL,
+                    rank INTEGER NOT NULL,
+                    decision_status TEXT NOT NULL DEFAULT 'unreviewed',
+                    created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS decisions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     decision TEXT NOT NULL,
                     note TEXT,
                     reviewer TEXT NOT NULL,
@@ -251,40 +369,167 @@ class KYCRepository:
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     event_type TEXT NOT NULL,
                     details_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 """
             )
+            self.migrate_schema(conn)
+        self.ensure_default_tenant()
 
-    def audit(self, session_id, event_type, details=None):
+    def migrate_schema(self, conn):
+        required_columns = {
+            "sessions": {"tenant_id": "TEXT", "session_token": "TEXT"},
+            "profiles": {"tenant_id": "TEXT"},
+            "documents": {"tenant_id": "TEXT"},
+            "selfies": {"tenant_id": "TEXT"},
+            "liveness_checks": {"tenant_id": "TEXT"},
+            "face_matches": {"tenant_id": "TEXT"},
+            "decisions": {"tenant_id": "TEXT"},
+            "audit_events": {"tenant_id": "TEXT"},
+        }
+        for table, columns in required_columns.items():
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token)")
+
+    def ensure_default_tenant(self):
+        slug = os.environ.get("DEFAULT_TENANT_SLUG", "demo")
+        tenant = self.get_tenant_by_slug(slug)
+        if not tenant:
+            tenant = self.create_tenant(slug, os.environ.get("DEFAULT_TENANT_NAME", "Demo Tenant"))
+        api_key = os.environ.get("DEFAULT_TENANT_API_KEY", "dev-tenant-key")
+        if api_key and not self.find_api_key(api_key):
+            self.add_api_key(tenant["id"], api_key, "default")
+        admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+        if admin_email and not self.get_user_by_email(admin_email):
+            self.add_user(tenant["id"], admin_email, os.environ.get("ADMIN_PASSWORD", "admin"), "owner")
+        self.backfill_default_tenant(tenant["id"])
+
+    def backfill_default_tenant(self, tenant_id):
+        with self.connect() as conn:
+            for table in ("sessions", "profiles", "documents", "selfies", "liveness_checks", "face_matches", "decisions", "audit_events"):
+                conn.execute(f"UPDATE {table} SET tenant_id = ? WHERE tenant_id IS NULL", (tenant_id,))
+            rows = conn.execute("SELECT id FROM sessions WHERE session_token IS NULL OR session_token = ''").fetchall()
+            for row in rows:
+                conn.execute("UPDATE sessions SET session_token = ? WHERE id = ?", (uuid.uuid4().hex + uuid.uuid4().hex, row["id"]))
+
+    def default_tenant_id(self):
+        tenant = self.get_tenant_by_slug(os.environ.get("DEFAULT_TENANT_SLUG", "demo"))
+        if not tenant:
+            tenant = self.create_tenant(os.environ.get("DEFAULT_TENANT_SLUG", "demo"), os.environ.get("DEFAULT_TENANT_NAME", "Demo Tenant"))
+        return tenant["id"]
+
+    def create_tenant(self, slug, name, settings=None, status="active"):
+        tenant_id = uuid.uuid4().hex
+        ts = now_iso()
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO audit_events(session_id, event_type, details_json, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, event_type, json.dumps(details or {}), now_iso()),
+                "INSERT INTO tenants(id, slug, name, status, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (tenant_id, slug, name, status, json.dumps(settings or {}), ts, ts),
+            )
+        return self.get_tenant(tenant_id)
+
+    def get_tenant(self, tenant_id):
+        with self.connect() as conn:
+            return row_to_dict(conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone())
+
+    def get_tenant_by_slug(self, slug):
+        with self.connect() as conn:
+            return row_to_dict(conn.execute("SELECT * FROM tenants WHERE slug = ?", (slug,)).fetchone())
+
+    def add_api_key(self, tenant_id, api_key, label="integration", status="active"):
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO tenant_api_keys(tenant_id, key_hash, label, status, created_at) VALUES (?, ?, ?, ?, ?)",
+                (tenant_id, hash_secret(api_key), label, status, now_iso()),
             )
 
-    def create_session(self):
+    def find_api_key(self, api_key):
+        with self.connect() as conn:
+            return row_to_dict(
+                conn.execute(
+                    """
+                    SELECT k.*, t.status AS tenant_status
+                    FROM tenant_api_keys k
+                    JOIN tenants t ON t.id = k.tenant_id
+                    WHERE k.key_hash = ?
+                    """,
+                    (hash_secret(api_key or ""),),
+                ).fetchone()
+            )
+
+    def authenticate_api_key(self, api_key):
+        key = self.find_api_key(api_key)
+        if not key or key["status"] != "active" or key["tenant_status"] != "active":
+            raise ValueError("Invalid tenant API key")
+        return self.get_tenant(key["tenant_id"])
+
+    def add_user(self, tenant_id, email, password, role="reviewer", status="active"):
+        if role not in ADMIN_ROLES:
+            raise ValueError("Invalid role")
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO users(tenant_id, email, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (tenant_id, email.lower().strip(), generate_password_hash(password), role, status, now_iso()),
+            )
+
+    def get_user_by_email(self, email):
+        with self.connect() as conn:
+            return row_to_dict(conn.execute("SELECT * FROM users WHERE email = ?", ((email or "").lower().strip(),)).fetchone())
+
+    def authenticate_user(self, email, password):
+        user = self.get_user_by_email(email)
+        if not user or user["status"] != "active" or not check_password_hash(user["password_hash"], password or ""):
+            raise ValueError("Invalid email or password")
+        tenant = self.get_tenant(user["tenant_id"])
+        if not tenant or tenant["status"] != "active":
+            raise ValueError("Tenant is not active")
+        user["tenant"] = tenant
+        return user
+
+    def tenant_id_for_session(self, session_id):
+        session = self.get_session(session_id)
+        if not session:
+            raise ValueError("Unknown KYC session")
+        return session.get("tenant_id")
+
+    def audit(self, session_id, event_type, details=None):
+        tenant_id = self.tenant_id_for_session(session_id)
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO audit_events(session_id, tenant_id, event_type, details_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, tenant_id, event_type, json.dumps(details or {}), now_iso()),
+            )
+
+    def create_session(self, tenant_id=None):
+        tenant_id = tenant_id or self.default_tenant_id()
         session_id = uuid.uuid4().hex
+        session_token = uuid.uuid4().hex + uuid.uuid4().hex
         challenge = random.sample(CHALLENGE_ACTIONS, 3)
         ts = now_iso()
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO sessions(id, applicant_status, review_status, challenge_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, "draft", "pending_review", json.dumps(challenge), ts, ts),
+                "INSERT INTO sessions(id, tenant_id, session_token, applicant_status, review_status, challenge_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, tenant_id, session_token, "draft", "pending_review", json.dumps(challenge), ts, ts),
             )
         self.audit(session_id, "session_created", {"challenge": challenge})
         return self.get_session(session_id)
 
-    def create_demo_session(self):
+    def create_demo_session(self, tenant_id=None):
+        tenant_id = tenant_id or self.default_tenant_id()
         session_id = uuid.uuid4().hex
+        session_token = uuid.uuid4().hex + uuid.uuid4().hex
         challenge = ["look_center", "blink", "turn_left", "turn_right"]
         ts = now_iso()
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO sessions(id, applicant_status, review_status, challenge_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, "draft", "pending_review", json.dumps(challenge), ts, ts),
+                "INSERT INTO sessions(id, tenant_id, session_token, applicant_status, review_status, challenge_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, tenant_id, session_token, "draft", "pending_review", json.dumps(challenge), ts, ts),
             )
         self.save_profile(session_id, DEMO_PROFILE)
         self.audit(session_id, "demo_session_created", {"challenge": challenge, "profile": DEMO_PROFILE})
@@ -293,6 +538,16 @@ class KYCRepository:
     def get_session(self, session_id):
         with self.connect() as conn:
             return row_to_dict(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+
+    def get_session_by_token(self, session_token):
+        with self.connect() as conn:
+            return row_to_dict(conn.execute("SELECT * FROM sessions WHERE session_token = ?", (session_token,)).fetchone())
+
+    def verify_session_token(self, session_id, session_token):
+        session = self.get_session(session_id)
+        if not session or not session_token or session["session_token"] != session_token:
+            raise ValueError("Invalid KYC session token")
+        return session
 
     def update_status(self, session_id, applicant_status=None, review_status=None):
         session = self.get_session(session_id)
@@ -310,6 +565,7 @@ class KYCRepository:
         self.audit(session_id, "status_updated", {"applicant_status": applicant_status, "review_status": review_status})
 
     def save_profile(self, session_id, data):
+        tenant_id = self.tenant_id_for_session(session_id)
         doc_type = data.get("document_type", "")
         if doc_type not in DOCUMENT_TYPES:
             raise ValueError("Unsupported document type")
@@ -320,10 +576,11 @@ class KYCRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO profiles(session_id, full_name, date_of_birth, nationality, address, phone, email,
+                INSERT INTO profiles(session_id, tenant_id, full_name, date_of_birth, nationality, address, phone, email,
                 document_type, document_number, issue_date, expiry_date, extra_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
+                    tenant_id=excluded.tenant_id,
                     full_name=excluded.full_name,
                     date_of_birth=excluded.date_of_birth,
                     nationality=excluded.nationality,
@@ -338,6 +595,7 @@ class KYCRepository:
                 """,
                 (
                     session_id,
+                    tenant_id,
                     data.get("full_name", "").strip(),
                     data.get("date_of_birth", "").strip(),
                     data.get("nationality", "").strip(),
@@ -354,6 +612,7 @@ class KYCRepository:
         self.audit(session_id, "profile_saved", {"document_type": doc_type})
 
     def add_document(self, session_id, document_type, side, file_info, content_type, gateway_result=None):
+        tenant_id = self.tenant_id_for_session(session_id)
         if document_type not in DOCUMENT_TYPES:
             raise ValueError("Unsupported document type")
         if side not in DOCUMENT_TYPES[document_type]["sides"]:
@@ -362,12 +621,13 @@ class KYCRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO documents(session_id, document_type, side, file_path, original_filename, content_type,
+                INSERT INTO documents(session_id, tenant_id, document_type, side, file_path, original_filename, content_type,
                 sha256, size, normalized_json, risk_status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
+                    tenant_id,
                     document_type,
                     side,
                     file_info["path"],
@@ -383,22 +643,24 @@ class KYCRepository:
         self.audit(session_id, "document_uploaded", {"side": side, "document_type": document_type})
 
     def add_selfie(self, session_id, file_info, content_type):
+        tenant_id = self.tenant_id_for_session(session_id)
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO selfies(session_id, file_path, original_filename, content_type, sha256, size, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO selfies(session_id, tenant_id, file_path, original_filename, content_type, sha256, size, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, file_info["path"], file_info["filename"], content_type, file_info["sha256"], file_info["size"], now_iso()),
+                (session_id, tenant_id, file_info["path"], file_info["filename"], content_type, file_info["sha256"], file_info["size"], now_iso()),
             )
         self.audit(session_id, "selfie_uploaded", {"sha256": file_info["sha256"]})
 
     def add_liveness(self, session_id, file_info, result):
+        tenant_id = self.tenant_id_for_session(session_id)
         status = result["risk_status"]
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO liveness_checks(session_id, file_path, sha256, result_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, file_info.get("path"), file_info.get("sha256"), json.dumps(result), status, now_iso()),
+                "INSERT INTO liveness_checks(session_id, tenant_id, file_path, sha256, result_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, tenant_id, file_info.get("path"), file_info.get("sha256"), json.dumps(result), status, now_iso()),
             )
         self.audit(session_id, "liveness_completed", {"status": status})
 
@@ -423,18 +685,101 @@ class KYCRepository:
             )
 
     def add_face_match(self, session_id, result):
+        tenant_id = self.tenant_id_for_session(session_id)
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO face_matches(session_id, score, status, details_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, result.get("score"), result["status"], json.dumps(result), now_iso()),
+                "INSERT INTO face_matches(session_id, tenant_id, score, status, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, tenant_id, result.get("score"), result["status"], json.dumps(result), now_iso()),
             )
         self.audit(session_id, "face_match_scored", {"status": result["status"], "score": result.get("score")})
+
+    def add_face_embedding(self, session_id, source_type, vector, provider, model_version, quality_score=None, face_box=None, source_id=None, status="active"):
+        tenant_id = self.tenant_id_for_session(session_id)
+        normalized = normalize_vector(vector)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO face_embeddings(tenant_id, session_id, source_type, source_id, vector_json, provider,
+                model_version, quality_score, face_box_json, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant_id,
+                    session_id,
+                    source_type,
+                    str(source_id) if source_id is not None else None,
+                    json.dumps(normalized),
+                    provider,
+                    model_version,
+                    quality_score,
+                    json.dumps(face_box or {}),
+                    status,
+                    now_iso(),
+                ),
+            )
+            embedding_id = cursor.lastrowid
+        self.audit(session_id, "face_embedding_stored", {"source_type": source_type, "embedding_id": embedding_id, "provider": provider})
+        return embedding_id
+
+    def latest_face_embedding(self, session_id, source_types):
+        placeholders = ", ".join("?" for _ in source_types)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT * FROM face_embeddings
+                WHERE session_id = ? AND source_type IN ({placeholders}) AND status = 'active'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                [session_id, *source_types],
+            ).fetchone()
+            return row_to_dict(row)
+
+    def list_face_embeddings(self, tenant_id, exclude_session_id=None, source_types=None):
+        params = [tenant_id]
+        where = "tenant_id = ? AND status = 'active'"
+        if exclude_session_id:
+            where += " AND session_id != ?"
+            params.append(exclude_session_id)
+        if source_types:
+            where += " AND source_type IN (" + ", ".join("?" for _ in source_types) + ")"
+            params.extend(source_types)
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT * FROM face_embeddings WHERE {where} ORDER BY id DESC", params).fetchall()
+            return [row_to_dict(row) for row in rows]
+
+    def store_face_search_results(self, session_id, query_embedding_id, matches):
+        tenant_id = self.tenant_id_for_session(session_id)
+        with self.connect() as conn:
+            conn.execute("DELETE FROM face_search_results WHERE session_id = ? AND query_embedding_id = ?", (session_id, query_embedding_id))
+            for rank, match in enumerate(matches, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO face_search_results(tenant_id, session_id, query_embedding_id, candidate_embedding_id,
+                    candidate_session_id, score, rank, decision_status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'unreviewed', ?)
+                    """,
+                    (
+                        tenant_id,
+                        session_id,
+                        query_embedding_id,
+                        match["embedding_id"],
+                        match["session_id"],
+                        match["score"],
+                        rank,
+                        now_iso(),
+                    ),
+                )
+        if matches:
+            self.audit(session_id, "face_search_completed", {"query_embedding_id": query_embedding_id, "matches": len(matches)})
 
     def submit(self, session_id):
         case = self.get_case(session_id)
         missing = []
         if not case["profile"]:
             missing.append("profile")
+        if not case["documents"]:
+            missing.append("document")
         if not case["liveness_checks"]:
             missing.append("liveness")
         if missing:
@@ -446,7 +791,9 @@ class KYCRepository:
                 ("submitted", review_status, now_iso(), now_iso(), session_id),
             )
         self.audit(session_id, "session_submitted", {"review_status": review_status})
-        return self.get_case(session_id)
+        submitted = self.get_case(session_id)
+        self.queue_callbacks(session_id, "kyc.submitted", submitted)
+        return submitted
 
     def compute_review_status(self, case):
         warnings = []
@@ -465,51 +812,193 @@ class KYCRepository:
         review_status = "manual_approved" if decision == "approved" else "manual_rejected"
         if decision == "resubmission_requested":
             review_status = "needs_review"
+        tenant_id = self.tenant_id_for_session(session_id)
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO decisions(session_id, decision, note, reviewer, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, decision, note, reviewer, now_iso()),
+                "INSERT INTO decisions(session_id, tenant_id, decision, note, reviewer, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, tenant_id, decision, note, reviewer, now_iso()),
             )
             conn.execute(
                 "UPDATE sessions SET applicant_status = ?, review_status = ?, updated_at = ? WHERE id = ?",
                 (decision, review_status, now_iso(), session_id),
             )
         self.audit(session_id, "admin_decision", {"decision": decision, "note": note})
+        self.queue_callbacks(session_id, f"kyc.{decision}", self.get_case(session_id))
 
-    def list_cases(self):
+    def list_cases(self, tenant_id=None):
         with self.connect() as conn:
+            where = ""
+            params = []
+            if tenant_id:
+                where = "WHERE s.tenant_id = ?"
+                params.append(tenant_id)
             rows = conn.execute(
-                """
+                f"""
                 SELECT s.*, p.full_name, p.document_type, p.document_number
                 FROM sessions s
                 LEFT JOIN profiles p ON p.session_id = s.id
+                {where}
                 ORDER BY s.created_at DESC
-                """
+                """,
+                params,
             ).fetchall()
             return [row_to_dict(row) for row in rows]
 
-    def get_case(self, session_id):
+    def get_case(self, session_id, tenant_id=None):
         with self.connect() as conn:
             session = row_to_dict(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
             if not session:
                 raise ValueError("Unknown KYC session")
+            if tenant_id and session.get("tenant_id") != tenant_id:
+                raise ValueError("Unknown KYC session")
+            tenant = row_to_dict(conn.execute("SELECT * FROM tenants WHERE id = ?", (session.get("tenant_id"),)).fetchone())
             profile = row_to_dict(conn.execute("SELECT * FROM profiles WHERE session_id = ?", (session_id,)).fetchone())
             documents = [row_to_dict(row) for row in conn.execute("SELECT * FROM documents WHERE session_id = ? ORDER BY id", (session_id,))]
             selfies = [row_to_dict(row) for row in conn.execute("SELECT * FROM selfies WHERE session_id = ? ORDER BY id", (session_id,))]
             liveness = [row_to_dict(row) for row in conn.execute("SELECT * FROM liveness_checks WHERE session_id = ? ORDER BY id", (session_id,))]
             matches = [row_to_dict(row) for row in conn.execute("SELECT * FROM face_matches WHERE session_id = ? ORDER BY id", (session_id,))]
+            embeddings = [row_to_dict(row) for row in conn.execute("SELECT * FROM face_embeddings WHERE session_id = ? ORDER BY id", (session_id,))]
+            search_results = [row_to_dict(row) for row in conn.execute("SELECT * FROM face_search_results WHERE session_id = ? ORDER BY rank", (session_id,))]
             decisions = [row_to_dict(row) for row in conn.execute("SELECT * FROM decisions WHERE session_id = ? ORDER BY id", (session_id,))]
             audit = [row_to_dict(row) for row in conn.execute("SELECT * FROM audit_events WHERE session_id = ? ORDER BY id", (session_id,))]
+            callbacks = [row_to_dict(row) for row in conn.execute("SELECT * FROM callback_jobs WHERE session_id = ? ORDER BY id", (session_id,))]
         return {
+            "tenant": tenant,
             "session": session,
             "profile": profile,
             "documents": documents,
             "selfies": selfies,
             "liveness_checks": liveness,
             "face_matches": matches,
+            "face_embeddings": embeddings,
+            "face_search_results": search_results,
             "decisions": decisions,
             "audit_events": audit,
+            "callback_jobs": callbacks,
         }
+
+    def add_callback_endpoint(self, tenant_id, name, url, events=None, secret=None, delivery_mode="json", status="active"):
+        selected = events or sorted(CALLBACK_EVENTS)
+        unknown = set(selected) - CALLBACK_EVENTS
+        if unknown:
+            raise ValueError(f"Unsupported callback events: {', '.join(sorted(unknown))}")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO callback_endpoints(tenant_id, name, url, secret, events_json, delivery_mode, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (tenant_id, name, url, secret, json.dumps(selected), delivery_mode, status, now_iso()),
+            )
+
+    def queue_callbacks(self, session_id, event_type, case=None):
+        if event_type not in CALLBACK_EVENTS:
+            return []
+        case = case or self.get_case(session_id)
+        tenant_id = case["session"]["tenant_id"]
+        payload = self.callback_payload(event_type, case)
+        ts = now_iso()
+        queued = []
+        with self.connect() as conn:
+            endpoints = conn.execute(
+                "SELECT * FROM callback_endpoints WHERE tenant_id = ? AND status = 'active'",
+                (tenant_id,),
+            ).fetchall()
+            for endpoint in endpoints:
+                events = json.loads(endpoint["events_json"] or "[]")
+                if event_type not in events:
+                    continue
+                cursor = conn.execute(
+                    """
+                    INSERT INTO callback_jobs(tenant_id, endpoint_id, session_id, event_type, payload_json, status,
+                    attempts, next_attempt_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+                    """,
+                    (tenant_id, endpoint["id"], session_id, event_type, json.dumps(payload), ts, ts, ts),
+                )
+                queued.append(cursor.lastrowid)
+        if queued:
+            self.audit(session_id, "callbacks_queued", {"event_type": event_type, "job_ids": queued})
+        return queued
+
+    def callback_payload(self, event_type, case):
+        def evidence(items):
+            return [
+                {
+                    "id": item["id"],
+                    "filename": item.get("original_filename"),
+                    "content_type": item.get("content_type"),
+                    "sha256": item.get("sha256"),
+                    "size": item.get("size"),
+                    "local_path": item.get("file_path"),
+                }
+                for item in items
+            ]
+
+        return {
+            "event": event_type,
+            "tenant": {
+                "id": case["tenant"]["id"],
+                "slug": case["tenant"]["slug"],
+                "name": case["tenant"]["name"],
+            } if case.get("tenant") else None,
+            "session": {
+                "id": case["session"]["id"],
+                "applicant_status": case["session"]["applicant_status"],
+                "review_status": case["session"]["review_status"],
+                "created_at": case["session"]["created_at"],
+                "submitted_at": case["session"].get("submitted_at"),
+            },
+            "profile": case.get("profile"),
+            "documents": evidence(case.get("documents", [])),
+            "selfies": evidence(case.get("selfies", [])),
+            "liveness": [json.loads(item["result_json"]) for item in case.get("liveness_checks", [])],
+            "face_matches": [json.loads(item["details_json"]) for item in case.get("face_matches", [])],
+            "face_search_results": case.get("face_search_results", []),
+            "decisions": case.get("decisions", []),
+        }
+
+    def pending_callback_jobs(self, limit=20, tenant_id=None):
+        tenant_filter = ""
+        params = [now_iso()]
+        if tenant_id:
+            tenant_filter = "AND j.tenant_id = ?"
+            params.append(tenant_id)
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT j.*, e.url, e.secret, e.delivery_mode
+                FROM callback_jobs j
+                LEFT JOIN callback_endpoints e ON e.id = j.endpoint_id
+                WHERE j.status IN ('pending', 'retrying')
+                  AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= ?)
+                  {tenant_filter}
+                ORDER BY j.created_at
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            return [row_to_dict(row) for row in rows]
+
+    def mark_callback_success(self, job_id):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE callback_jobs SET status = 'delivered', attempts = attempts + 1, last_error = NULL, updated_at = ? WHERE id = ?",
+                (now_iso(), job_id),
+            )
+
+    def mark_callback_failure(self, job_id, error, retry_seconds=300):
+        retry_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + retry_seconds))
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE callback_jobs
+                SET status = 'retrying', attempts = attempts + 1, next_attempt_at = ?, last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (retry_at, str(error)[:500], now_iso(), job_id),
+            )
 
     def delete_evidence(self, session_id):
         with self.connect() as conn:
@@ -525,16 +1014,19 @@ class OCRGatewayClient:
         self.base_url = (base_url or os.environ.get("OCR_GATEWAY_URL") or "http://localhost:8000").rstrip("/")
         self.api_key = api_key if api_key is not None else os.environ.get("OCR_GATEWAY_API_KEY") or os.environ.get("GATEWAY_API_KEY")
         self.timeout_seconds = float(timeout_seconds or os.environ.get("OCR_GATEWAY_TIMEOUT_SECONDS", 90))
+        self.send_document_type = os.environ.get("OCR_GATEWAY_SEND_DOCUMENT_TYPE", "").lower() in {"1", "true", "yes"}
 
-    def extract(self, image_path, document_type=None):
+    def extract(self, image_path, document_type=None, content_type=None, filename=None):
         try:
             import requests
         except Exception as error:
             raise ValueError("requests is required to call the OCR HTTP gateway") from error
 
         path = Path(image_path)
-        params = {"values_only": "false"}
-        if document_type:
+        upload_name = filename or path.name
+        upload_content_type = content_type or mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
+        params = {"values_only": "true"}
+        if document_type and self.send_document_type:
             params["document_type"] = document_type
         headers = {"Accept": "application/json"}
         if self.api_key:
@@ -545,7 +1037,7 @@ class OCRGatewayClient:
                 response = requests.post(
                     f"{self.base_url}/ocr",
                     params=params,
-                    files={"file": (path.name, handle, "application/octet-stream")},
+                    files={"file": (upload_name, handle, upload_content_type)},
                     headers=headers,
                     timeout=self.timeout_seconds,
                 )
@@ -572,40 +1064,339 @@ class OCRGatewayClient:
             "response": body,
         }
 
-class FaceMatchService:
-    def __init__(self):
+
+class OCRProfileMapper:
+    FIELD_ALIASES = {
+        "full_name": ["full_name", "name", "given_name", "applicant_name"],
+        "date_of_birth": ["date_of_birth", "dob", "birth_date"],
+        "nationality": ["nationality", "country", "citizenship"],
+        "address": ["address", "residential_address", "permanent_address"],
+        "document_number": ["document_number", "id_number", "passport_number", "license_number", "citizenship_number", "number"],
+        "issue_date": ["issue_date", "issued_date", "date_of_issue"],
+        "expiry_date": ["expiry_date", "expiration_date", "date_of_expiry", "valid_until"],
+    }
+
+    def map(self, gateway_result, document_type=None):
+        response = gateway_result.get("response", {}) if isinstance(gateway_result, dict) else {}
+        values = self.extract_values(response)
+        suggested = {}
+        for profile_field, aliases in self.FIELD_ALIASES.items():
+            value = self.first_value(values, aliases)
+            if value:
+                suggested[profile_field] = str(value).strip()
+        if document_type:
+            suggested["document_type"] = document_type
+        return suggested
+
+    def extract_values(self, body):
+        if not isinstance(body, dict):
+            return {}
+        for key in ("values", "fields", "data", "extracted", "result"):
+            nested = body.get(key)
+            if isinstance(nested, dict):
+                return self.flatten_values(nested)
+        return self.flatten_values(body)
+
+    def flatten_values(self, values):
+        flat = {}
+        for key, value in values.items():
+            normalized_key = str(key).lower().strip()
+            if isinstance(value, dict):
+                if "value" in value:
+                    flat[normalized_key] = value.get("value")
+                elif "text" in value:
+                    flat[normalized_key] = value.get("text")
+                else:
+                    for child_key, child_value in self.flatten_values(value).items():
+                        flat[f"{normalized_key}.{child_key}"] = child_value
+            else:
+                flat[normalized_key] = value
+        return flat
+
+    def first_value(self, values, aliases):
+        for alias in aliases:
+            alias = alias.lower()
+            if values.get(alias):
+                return values[alias]
+        for key, value in values.items():
+            if value and any(key.endswith(f".{alias}") for alias in aliases):
+                return value
+        return None
+
+
+class CallbackDeliveryService:
+    def __init__(self, repository, timeout_seconds=None):
+        self.repository = repository
+        self.timeout_seconds = float(timeout_seconds or os.environ.get("CALLBACK_TIMEOUT_SECONDS", 20))
+
+    def deliver_pending(self, limit=20, tenant_id=None):
+        results = []
+        for job in self.repository.pending_callback_jobs(limit, tenant_id=tenant_id):
+            try:
+                self.deliver(job)
+                self.repository.mark_callback_success(job["id"])
+                results.append({"job_id": job["id"], "status": "delivered"})
+            except ValueError as error:
+                self.repository.mark_callback_failure(job["id"], str(error))
+                results.append({"job_id": job["id"], "status": "retrying", "error": str(error)})
+        return results
+
+    def deliver(self, job):
+        if not job.get("url"):
+            raise ValueError("Callback endpoint is missing")
+        try:
+            import requests
+        except Exception as error:
+            raise ValueError("requests is required to deliver callbacks") from error
+
+        payload = json.loads(job["payload_json"])
+        headers = self.headers(job, payload)
+        if job.get("delivery_mode") == "multipart":
+            response = self.post_multipart(requests, job["url"], headers, payload)
+        else:
+            response = requests.post(job["url"], json=payload, headers=headers, timeout=self.timeout_seconds)
+        if not response.ok:
+            raise ValueError(f"Callback returned {response.status_code}: {response.text[:200]}")
+
+    def headers(self, job, payload):
+        headers = {"X-KYC-Event": job["event_type"]}
+        secret = job.get("secret")
+        if secret:
+            body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            headers["X-KYC-Signature"] = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        return headers
+
+    def post_multipart(self, requests, url, headers, payload):
+        files = []
+        handles = []
+        try:
+            for group in ("documents", "selfies"):
+                for item in payload.get(group, []):
+                    path = item.get("local_path")
+                    if not path or not Path(path).exists():
+                        continue
+                    handle = Path(path).open("rb")
+                    handles.append(handle)
+                    files.append(("files", (item.get("filename") or Path(path).name, handle, item.get("content_type") or "application/octet-stream")))
+            response = requests.post(
+                url,
+                data={"payload": json.dumps(payload)},
+                files=files,
+                headers=headers,
+                timeout=self.timeout_seconds,
+            )
+            return response
+        finally:
+            for handle in handles:
+                handle.close()
+
+
+class FaceRecognitionProvider:
+    provider_name = "base"
+    model_version = "none"
+
+    def detect_faces(self, image):
+        raise NotImplementedError
+
+    def extract_embedding(self, image, face_box):
+        raise NotImplementedError
+
+    def compare(self, embedding_a, embedding_b):
+        return cosine_similarity(embedding_a, embedding_b)
+
+
+class LocalONNXFaceRecognitionProvider(FaceRecognitionProvider):
+    provider_name = "local_onnx"
+
+    def __init__(self, model_path=None):
+        self.model_path = Path(model_path or os.environ.get("FACE_RECOGNITION_MODEL", "models/arcface.onnx"))
+        self.model_version = self.model_path.name
+        self.session = None
         cascade_dir = Path(cv2.data.haarcascades)
         self.face_cascade = cv2.CascadeClassifier(str(cascade_dir / "haarcascade_frontalface_default.xml"))
+        if self.model_path.exists():
+            try:
+                import onnxruntime as ort
+            except Exception as error:
+                self.load_error = f"onnxruntime is required when FACE_RECOGNITION_MODEL is configured: {error}"
+            else:
+                self.session = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
+                self.load_error = None
+        else:
+            self.load_error = "Face recognition model is not configured."
+
+    @property
+    def available(self):
+        return self.session is not None
+
+    def detect_faces(self, image):
+        if image is None:
+            return []
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+        results = []
+        h, w = image.shape[:2]
+        for x, y, face_w, face_h in faces:
+            area = float(face_w * face_h)
+            quality = min(1.0, area / max(float(w * h) * 0.12, 1.0))
+            results.append({"x": int(x), "y": int(y), "width": int(face_w), "height": int(face_h), "quality": round(quality, 4)})
+        return sorted(results, key=lambda item: item["width"] * item["height"], reverse=True)
+
+    def extract_embedding(self, image, face_box):
+        if not self.available:
+            return None
+        crop = self.crop_face(image, face_box)
+        blob = self.preprocess(crop)
+        input_name = self.session.get_inputs()[0].name
+        output = self.session.run(None, {input_name: blob})[0]
+        return normalize_vector(output.reshape(-1))
+
+    def crop_face(self, image, face_box):
+        x = max(int(face_box["x"]), 0)
+        y = max(int(face_box["y"]), 0)
+        w = max(int(face_box["width"]), 1)
+        h = max(int(face_box["height"]), 1)
+        pad = int(max(w, h) * 0.18)
+        y1 = max(y - pad, 0)
+        y2 = min(y + h + pad, image.shape[0])
+        x1 = max(x - pad, 0)
+        x2 = min(x + w + pad, image.shape[1])
+        return image[y1:y2, x1:x2]
+
+    def preprocess(self, crop):
+        resized = cv2.resize(crop, (112, 112))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)
+        normalized = (rgb - 127.5) / 127.5
+        return np.transpose(normalized, (2, 0, 1))[None, :, :, :]
+
+
+class FaceMatchService:
+    def __init__(self, repository=None, provider=None):
+        self.repository = repository
+        self.provider = provider or LocalONNXFaceRecognitionProvider()
 
     def score(self, document_path, selfie_path):
-        doc_face = self.extract_face(document_path)
-        selfie_face = self.extract_face(selfie_path)
-        if doc_face is None or selfie_face is None:
+        doc_result = self.extract_embedding_from_file(document_path, "document")
+        selfie_result = self.extract_embedding_from_file(selfie_path, "selfie")
+        if not doc_result.get("embedding") or not selfie_result.get("embedding"):
             return {
                 "score": None,
                 "status": "needs_manual_review",
-                "reason": "Could not reliably extract a face from the document or selfie.",
+                "reason": doc_result.get("reason") or selfie_result.get("reason") or "Could not extract comparable face embeddings.",
+                "provider": self.provider.provider_name,
+                "model_version": self.provider.model_version,
             }
 
-        doc_hist = cv2.calcHist([doc_face], [0], None, [64], [0, 256])
-        selfie_hist = cv2.calcHist([selfie_face], [0], None, [64], [0, 256])
-        cv2.normalize(doc_hist, doc_hist)
-        cv2.normalize(selfie_hist, selfie_hist)
-        score = float(cv2.compareHist(doc_hist, selfie_hist, cv2.HISTCMP_CORREL))
-        status = "pass" if score >= 0.55 else "warn"
-        return {"score": round(score, 4), "status": status, "reason": "Local histogram face comparison; admin review required."}
+        return self.compare_embeddings(doc_result["embedding"], selfie_result["embedding"])
 
-    def extract_face(self, image_path):
+    def enroll_source(self, session_id, source_type, image_path, source_id=None):
+        result = self.extract_embedding_from_file(image_path, source_type)
+        if not self.repository or not result.get("embedding"):
+            return result
+        embedding_id = self.repository.add_face_embedding(
+            session_id,
+            source_type,
+            result["embedding"],
+            result["provider"],
+            result["model_version"],
+            quality_score=result.get("quality_score"),
+            face_box=result.get("face_box"),
+            source_id=source_id,
+        )
+        return {**result, "embedding_id": embedding_id}
+
+    def compare_session(self, session_id):
+        if not self.repository:
+            return {"score": None, "status": "needs_manual_review", "reason": "Face repository is not configured."}
+        document = self.repository.latest_face_embedding(session_id, ["document"])
+        selfie = self.repository.latest_face_embedding(session_id, ["selfie", "liveness"])
+        if not document or not selfie:
+            return {
+                "score": None,
+                "status": "needs_manual_review",
+                "reason": "Missing document or selfie face embedding.",
+                "provider": self.provider.provider_name,
+                "model_version": self.provider.model_version,
+            }
+        result = self.compare_embeddings(json.loads(document["vector_json"]), json.loads(selfie["vector_json"]))
+        result["document_embedding_id"] = document["id"]
+        result["selfie_embedding_id"] = selfie["id"]
+        return result
+
+    def search_tenant_gallery(self, session_id, limit=5):
+        if not self.repository:
+            return []
+        session = self.repository.get_session(session_id)
+        query = self.repository.latest_face_embedding(session_id, ["selfie", "liveness", "document"])
+        if not session or not query:
+            return []
+        query_vector = json.loads(query["vector_json"])
+        candidates = self.repository.list_face_embeddings(
+            session["tenant_id"],
+            exclude_session_id=session_id,
+            source_types=["selfie", "liveness", "document"],
+        )
+        matches = []
+        for candidate in candidates:
+            score = cosine_similarity(query_vector, json.loads(candidate["vector_json"]))
+            if score >= 0.45:
+                matches.append(
+                    {
+                        "embedding_id": candidate["id"],
+                        "session_id": candidate["session_id"],
+                        "score": round(score, 4),
+                        "source_type": candidate["source_type"],
+                    }
+                )
+        matches = sorted(matches, key=lambda item: item["score"], reverse=True)[:limit]
+        self.repository.store_face_search_results(session_id, query["id"], matches)
+        return matches
+
+    def compare_embeddings(self, embedding_a, embedding_b):
+        score = round(self.provider.compare(embedding_a, embedding_b), 4)
+        if score >= 0.55:
+            status = "pass"
+        elif score >= 0.45:
+            status = "needs_manual_review"
+        else:
+            status = "warn"
+        return {
+            "score": score,
+            "status": status,
+            "provider": self.provider.provider_name,
+            "model_version": self.provider.model_version,
+            "thresholds": {"pass": 0.55, "review": 0.45},
+        }
+
+    def extract_embedding_from_file(self, image_path, source_type):
         image = cv2.imread(str(image_path))
         if image is None:
-            return None
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
-        if len(faces) == 0:
-            return None
-        x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
-        face = gray[y : y + h, x : x + w]
-        return cv2.resize(face, (128, 128))
+            return {"status": "needs_manual_review", "reason": "Image could not be read.", "source_type": source_type}
+        faces = self.provider.detect_faces(image)
+        if not faces:
+            return {"status": "needs_manual_review", "reason": "No face detected.", "source_type": source_type}
+        if not getattr(self.provider, "available", True):
+            return {
+                "status": "needs_manual_review",
+                "reason": getattr(self.provider, "load_error", None) or "Face recognition model is not configured.",
+                "source_type": source_type,
+                "provider": self.provider.provider_name,
+                "model_version": self.provider.model_version,
+                "face_box": faces[0],
+                "quality_score": faces[0].get("quality"),
+            }
+        embedding = self.provider.extract_embedding(image, faces[0])
+        if embedding is None:
+            return {"status": "needs_manual_review", "reason": "Embedding extraction failed.", "source_type": source_type}
+        return {
+            "status": "active",
+            "source_type": source_type,
+            "embedding": embedding,
+            "provider": self.provider.provider_name,
+            "model_version": self.provider.model_version,
+            "face_box": faces[0],
+            "quality_score": faces[0].get("quality"),
+        }
 
 
 class LivenessService:
