@@ -1,0 +1,40 @@
+# Local Image Description Service
+
+Self-hosted FastAPI service for lightweight image descriptions. It uses YOLOv8n for object detection, a rule-based caption engine, optional local Tesseract OCR for English/Nepali text, and heuristic tamper signals. There are no external API calls at request time.
+
+## Setup
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 scripts/download_models.py
+```
+
+`requirements.txt` pins CPU-only PyTorch wheels to avoid pulling GPU/CUDA packages.
+
+For OCR, install the Tesseract binary and language packs through your OS package manager:
+
+```bash
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-nep
+```
+
+The service still works without OCR and returns an empty `text` field.
+
+## Run
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+## Response
+
+`POST /describe` returns detected objects, generated caption, OCR text, OCR languages, tags, image dimensions, and a `tamper` object with heuristic `verdict`, `score`, and signal details.
+
+Tamper analysis is a local heuristic check, not forensic proof. It looks at metadata, JPEG error level, local noise consistency, and edge consistency.
+
+## Test
+
+```bash
+pytest
+```
+
+The tests generate JPEG, PNG, WebP, and BMP sample images in memory and verify that the upload pipeline accepts each format.
