@@ -38,7 +38,23 @@ GROUP_COLORS = {
     "left_eye":      (50, 255, 100),
     "outer_lips":    (80, 100, 255),
     "inner_lips":    (120, 60, 255),
+    "lips_outer":    (80, 100, 255),
+    "lips_inner":    (120, 60, 255),
+    "left_iris":     (0, 255, 200),
+    "right_iris":    (0, 255, 200),
+    "nose":          (0, 220, 220),
+    "face_oval":     (180, 180, 180),
 }
+
+MP_CONNECTIONS = [
+    [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10],
+    [263, 249, 390, 373, 374, 380, 381, 382, 362, 466, 388, 387, 386, 385, 384, 398, 263],
+    [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33],
+    [276, 283, 282, 295, 285, 300, 293, 334, 296, 336],
+    [46, 53, 52, 65, 55, 70, 63, 105, 66, 107],
+    [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 61],
+    [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191, 78],
+]
 
 
 def draw_faces(
@@ -152,26 +168,37 @@ def _draw_confidence_bar(canvas, confidence: float, x: int, y: int, width: int):
 
 
 def _draw_connections(canvas, lm: LandmarkResult):
-    if lm.mode != "lbf" or len(lm.points) < 68:
-        return
-
     pts = lm.points.astype(int)
-    for chain in LANDMARK_CONNECTIONS:
-        for j in range(len(chain) - 1):
-            a, b = chain[j], chain[j + 1]
-            if a < len(pts) and b < len(pts):
-                cv2.line(canvas, tuple(pts[a]), tuple(pts[b]),
-                         COLORS["connection"], 1, cv2.LINE_AA)
+    if lm.mode == "mediapipe_478":
+        for chain in MP_CONNECTIONS:
+            for j in range(len(chain) - 1):
+                a, b = chain[j], chain[j + 1]
+                if a < len(pts) and b < len(pts):
+                    cv2.line(canvas, tuple(pts[a]), tuple(pts[b]),
+                             COLORS["connection"], 1, cv2.LINE_AA)
+        for iris_indices in ([468, 469, 470, 471, 472], [473, 474, 475, 476, 477]):
+            if all(i < len(pts) for i in iris_indices):
+                ring = [tuple(pts[i]) for i in list(iris_indices) + [iris_indices[0]]]
+                for j in range(len(ring) - 1):
+                    cv2.line(canvas, ring[j], ring[j + 1], (0, 255, 200), 1, cv2.LINE_AA)
+    elif lm.mode == "lbf" and len(pts) == 68:
+        for chain in LANDMARK_CONNECTIONS:
+            for j in range(len(chain) - 1):
+                a, b = chain[j], chain[j + 1]
+                if a < len(pts) and b < len(pts):
+                    cv2.line(canvas, tuple(pts[a]), tuple(pts[b]),
+                             COLORS["connection"], 1, cv2.LINE_AA)
 
 
 def _draw_points(canvas, lm: LandmarkResult):
     pts = lm.points.astype(int)
 
-    if lm.mode == "lbf" and lm.groups:
+    if lm.mode in ("lbf", "mediapipe_478") and lm.groups:
         for group_name, group_pts in lm.groups.items():
             color = GROUP_COLORS.get(group_name, COLORS["landmark"])
+            radius = 1 if lm.mode == "mediapipe_478" else 2
             for pt in group_pts.astype(int):
-                cv2.circle(canvas, tuple(pt), 2, color, -1, cv2.LINE_AA)
+                cv2.circle(canvas, tuple(pt), radius, color, -1, cv2.LINE_AA)
     else:
         for pt in pts:
             cv2.circle(canvas, tuple(pt), 4, COLORS["landmark"], -1, cv2.LINE_AA)

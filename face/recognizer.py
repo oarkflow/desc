@@ -276,3 +276,115 @@ class FusionRecognizer:
     @property
     def known_labels(self) -> List[str]:
         return list(set(self.lbph.known_labels + self.hog.known_labels))
+
+
+@dataclass
+class FaceSearchMatch:
+    image_path: str
+    face_index: int
+    cosine: float
+    l2: float
+    bbox: List[float]
+    detection_confidence: float
+    is_match: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "image_path": self.image_path,
+            "face_index": self.face_index,
+            "cosine": round(self.cosine, 4),
+            "l2": round(self.l2, 4),
+            "bbox": [round(v, 1) for v in self.bbox],
+            "detection_confidence": round(self.detection_confidence, 4),
+            "is_match": self.is_match,
+        }
+
+
+class SFaceSearcher:
+    """
+    YuNet + SFace image search.
+
+    This is the practical local face-recognition path for matching a query face
+    against a folder. It uses OpenCV's FaceDetectorYN for detection/alignment and
+    FaceRecognizerSF for embeddings.
+    """
+
+    def __init__(
+        self,
+        yunet_model_path: str,
+        sface_model_path: str,
+        cosine_threshold: float = 0.363,
+        detect_threshold: float = 0.45,
+    ):
+        if not Path(yunet_model_path).exists():
+            raise FileNotFoundError(f"YuNet model not found: {yunet_model_path}")
+        if not Path(sface_model_path).exists():
+            raise FileNotFoundError(f"SFace model not found: {sface_model_path}")
+
+        self.detector = cv2.FaceDetectorYN.create(
+            yunet_model_path,
+            "",
+            (320, 320),
+            score_threshold=detect_threshold,
+            nms_threshold=0.3,
+            top_k=5000,
+        )
+        self.recognizer = cv2.FaceRecognizerSF.create(sface_model_path, "")
+        self.cosine_threshold = cosine_threshold
+
+    def search(self, query_path: str, image_paths: List[str]) -> List[FaceSearchMatch]:
+        query_faces = self._features_for(query_path)
+        if not query_faces:
+            raise ValueError(f"No face detected in query image: {query_path}")
+
+        # Use the largest query face if the query image has more than one face.
+        query = max(query_faces, key=lambda item: item["bbox"][2] * item["bbox"][3])
+        query_feature = query["feature"]
+
+        matches = []
+        for image_path in image_paths:
+            for item in self._features_for(image_path):
+                cosine = float(self.recognizer.match(
+                    query_feature,
+                    item["feature"],
+                    cv2.FaceRecognizerSF_FR_COSINE,
+                ))
+                l2 = float(self.recognizer.match(
+                    query_feature,
+                    item["feature"],
+                    cv2.FaceRecognizerSF_FR_NORM_L2,
+                ))
+                matches.append(FaceSearchMatch(
+                    image_path=image_path,
+                    face_index=item["face_index"],
+                    cosine=cosine,
+                    l2=l2,
+                    bbox=item["bbox"],
+                    detection_confidence=item["detection_confidence"],
+                    is_match=cosine >= self.cosine_threshold,
+                ))
+
+        matches.sort(key=lambda match: match.cosine, reverse=True)
+        return matches
+
+    def _features_for(self, image_path: str) -> List[dict]:
+        from .image_loader import load_image
+
+        image = load_image(image_path, max_dim=2048)
+        h, w = image.shape[:2]
+        self.detector.setInputSize((w, h))
+        _, faces = self.detector.detect(image)
+        if faces is None:
+            return []
+
+        results = []
+        for index, face in enumerate(faces):
+            aligned = self.recognizer.alignCrop(image, face)
+            feature = self.recognizer.feature(aligned)
+            results.append({
+                "face_index": index,
+                "feature": feature,
+                "bbox": [float(v) for v in face[:4]],
+                "detection_confidence": float(face[-1]),
+            })
+        return results

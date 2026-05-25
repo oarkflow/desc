@@ -10,6 +10,7 @@ A production-quality Python platform for **face detection**, **68-point landmark
 |---|---|
 | **Detection** | Multi-scale Haar Cascade + profile detection with NMS |
 | **Landmarks** | 68-point LBF model (jaw, brows, eyes, nose, lips) |
+| **MediaPipe landmarks** | 478-point FaceLandmarker model with iris landmarks |
 | **Metrics** | Eye distance, face width, yaw angle, mouth-open ratio |
 | **Recognition** | Fusion of LBPH + HOG-cosine (no GPU, no DL framework needed) |
 | **Image formats** | JPEG, PNG, BMP, TIFF, WEBP, GIF, HEIC, RAW (NEF/CR2/ARW…) |
@@ -20,21 +21,123 @@ A production-quality Python platform for **face detection**, **68-point landmark
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install opencv-python opencv-contrib-python Pillow numpy
-
-# Download the 68-point landmark model (~54 MB) — needed once
-curl -L "https://raw.githubusercontent.com/kurnianggoro/GSOC2017/master/data/lbfmodel.yaml" \
-     -o lbfmodel.yaml
+make -C face setup
 ```
 
 ### Analyze an image (detect + landmarks)
 ```bash
-python -m face.cli analyze photo.jpg \
+python -m face.cli --landmark-mode mediapipe \
+    --mediapipe-model face_landmarker.task \
+    analyze photo.jpg \
     --output annotated.jpg \
     --json result.json \
     --metrics
 ```
+
+With Make:
+
+```bash
+make -C face analyze IMAGE=tests/obama1.jpg
+```
+
+### Detect faces and crop them
+
+Draw square boxes:
+
+```bash
+python -m face.cli --landmark-mode mediapipe detect face/tests/obama1.jpg \
+    --overlay boxes \
+    --output /tmp/obama_boxes.jpg \
+    --json /tmp/obama_faces.json
+```
+
+By default the CLI uses YuNet when `models/face_detection_yunet_2023mar.onnx` is available. That is much stricter than the Haar/multiscale fallback and avoids common false positives. To force another detector, pass `--detection-mode multiscale` or `--detection-mode haar`.
+
+Draw landmark points and square boxes:
+
+```bash
+python -m face.cli --landmark-mode mediapipe detect face/tests/obama1.jpg \
+    --overlay both \
+    --output /tmp/obama_points_boxes.jpg
+```
+
+Crop detected faces:
+
+```bash
+python -m face.cli detect face/tests/obama1.jpg \
+    --overlay none \
+    --crop-dir /tmp/face_crops
+```
+
+With Make:
+
+```bash
+make -C face detect IMAGE=tests/obama1.jpg OVERLAY=both
+make -C face crop IMAGE=tests/obama1.jpg CROP_DIR=/tmp/face_crops
+```
+
+### Detect all images and store landmark points
+
+Process every image in a folder:
+
+```bash
+python -m face.cli --landmark-mode mediapipe detect-all face/tests \
+    --output-dir /tmp/face_points \
+    --overlay both \
+    --crop
+```
+
+Output layout:
+
+```text
+/tmp/face_points/
+├── points/      # one *.faces.json file per source image, including 478-point landmarks
+├── overlays/    # box/point overlays
+├── crops/       # cropped faces grouped by source image
+└── summary.json
+```
+
+With Make:
+
+```bash
+make -C face detect-all FOLDER=tests POINTS_DIR=/tmp/face_points OVERLAY=both
+```
+
+### Search for a face in a folder
+
+```bash
+make -C face search QUERY=tests/test-1.webp FOLDER=tests
+```
+
+Direct CLI:
+
+```bash
+python -m face.cli search face/tests/test-1.webp face/tests \
+    --overlay-dir /tmp/search_overlays \
+    --crop-dir /tmp/search_crops \
+    --verbose \
+    --json /tmp/search.json
+```
+
+Search an explicit image list:
+
+```bash
+python -m face.cli search face/tests/test-1.webp /path/to/images.txt
+```
+
+Verbose mode explains each decision:
+
+```text
+MATCH/no_match
+cosine score and threshold margin
+closest landmark regions with facial-position details
+most different landmark regions with facial-position details
+geometry-only note for features such as moles or skin marks
+```
+
+The SFace cosine score decides the identity match. Landmark differences are shown as supporting context, because expression, pose, and crop quality can move mouth/eye/nose/chin/face-oval points even for the same person. Texture-level features such as moles are not facial landmarks, so verbose mode calls them out as not measured instead of treating them as proof.
+
+`images.txt` should contain one image path per line. Relative paths are resolved relative to the list file first, then relative to the current working directory.
 
 ### Enroll a person and recognize them
 ```bash
@@ -59,8 +162,10 @@ from face import FacePlatform
 
 # Initialize
 platform = FacePlatform(
+    mediapipe_model_path="face_landmarker.task",  # 478-point MediaPipe
     lbf_model_path="lbfmodel.yaml",   # 68-point landmarks
     detection_mode="multiscale",       # 'haar' | 'multiscale' | 'yunet'
+    landmark_mode="auto",              # 'auto' | 'mediapipe' | 'lbf' | 'region'
     recognition_enabled=True,
 )
 
@@ -84,7 +189,7 @@ for i, face in enumerate(result.faces):
 
     if i < len(result.landmarks):
         lm = result.landmarks[i]
-        print(f"  68-point landmarks detected ({lm.mode} mode)")
+        print(f"  {len(lm.points)} landmarks detected ({lm.mode} mode)")
         print(f"  Eye distance  : {lm.eye_distance():.1f} px")
         print(f"  Face width    : {lm.face_width():.1f} px")
         print(f"  Yaw estimate  : {lm.yaw_estimate():+.1f}°")
@@ -95,6 +200,9 @@ for i, face in enumerate(result.faces):
         left_eye_pts  = lm.groups["left_eye"]
         jaw_pts       = lm.groups["jaw"]          # shape (17, 2)
         lip_pts       = lm.groups["outer_lips"]   # shape (12, 2)
+        if lm.mode == "mediapipe_478":
+            right_iris = lm.groups["right_iris"]  # shape (5, 2)
+            left_iris  = lm.groups["left_iris"]   # shape (5, 2)
 
     if i < len(result.recognitions):
         rec = result.recognitions[i]

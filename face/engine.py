@@ -16,8 +16,19 @@ from .detector import (
     FaceDetection, HaarCascadeDetector, YuNetDetector,
     MultiScaleDetector, _nms,
 )
-from .landmarks import LBFLandmarkDetector, RegionLandmarkDetector, LandmarkResult
+from .landmarks import (
+    LBFLandmarkDetector,
+    MediaPipeLandmarkDetector,
+    RegionLandmarkDetector,
+    LandmarkResult,
+)
 from .recognizer import FusionRecognizer, RecognitionResult
+from .attributes import (
+    DemographicEstimator,
+    FaceAttributes,
+    demographic_model_available,
+    estimate_face_attributes,
+)
 from .image_loader import load_image, image_info
 from .visualizer import draw_faces, save_image
 
@@ -30,6 +41,7 @@ class AnalysisResult:
     faces: List[FaceDetection]
     landmarks: List[LandmarkResult]
     recognitions: List[RecognitionResult]
+    attributes: List[FaceAttributes] = field(default_factory=list)
     annotated_image: Optional[np.ndarray] = field(default=None, repr=False)
 
     @property
@@ -48,6 +60,7 @@ class AnalysisResult:
                     "confidence": round(f.confidence, 4),
                     "landmarks": self.landmarks[i].to_dict() if i < len(self.landmarks) else None,
                     "recognition": self.recognitions[i].to_dict() if i < len(self.recognitions) else None,
+                    "attributes": self.attributes[i].to_dict() if i < len(self.attributes) else None,
                 }
                 for i, f in enumerate(self.faces)
             ],
@@ -79,6 +92,12 @@ class AnalysisResult:
                 print(f"  Identity  : {status} → {rec.label}  "
                       f"confidence={rec.confidence:.2%}  [{rec.method}]")
 
+            if i < len(self.attributes):
+                attr = self.attributes[i]
+                print(f"  Facing    : {attr.facing_direction}  "
+                      f"expression={attr.expression['label']}  "
+                      f"quality={attr.quality['label']}")
+
         print(f"{'═'*60}\n")
 
 
@@ -96,14 +115,21 @@ class FacePlatform:
     def __init__(
         self,
         lbf_model_path: Optional[str] = None,
+        mediapipe_model_path: Optional[str] = None,
         yunet_model_path: Optional[str] = None,
         recognizer_db_path: Optional[str] = None,
         detection_mode: str = "multiscale",   # 'haar' | 'multiscale' | 'yunet'
-        landmark_mode: str = "auto",          # 'auto' | 'lbf' | 'region'
+        landmark_mode: str = "auto",          # 'auto' | 'mediapipe' | 'lbf' | 'region'
         min_face_size: int = 30,
         recognition_enabled: bool = True,
         lbph_threshold: float = 80.0,
         hog_threshold: float = 0.50,
+        demographic_enabled: bool = True,
+        age_model_path: Optional[str] = None,
+        age_proto_path: Optional[str] = None,
+        gender_model_path: Optional[str] = None,
+        gender_proto_path: Optional[str] = None,
+        demographic_calibration_path: Optional[str] = None,
     ):
         # ── Detector ─────────────────────────────────────────────────────────
         if detection_mode == "yunet" and yunet_model_path:
@@ -115,11 +141,20 @@ class FacePlatform:
 
         # ── Landmark detector ─────────────────────────────────────────────────
         self._lbf_path = lbf_model_path
+        self._mediapipe_path = mediapipe_model_path
         self._landmark_mode = landmark_mode
+        self._mp_detector: Optional[MediaPipeLandmarkDetector] = None
         self._lbf_detector: Optional[LBFLandmarkDetector] = None
         self._region_detector = RegionLandmarkDetector()
 
-        if landmark_mode in ("auto", "lbf") and lbf_model_path:
+        if landmark_mode in ("auto", "mediapipe") and mediapipe_model_path:
+            try:
+                self._mp_detector = MediaPipeLandmarkDetector(mediapipe_model_path)
+                print("[FacePlatform] MediaPipe 478-point landmark model loaded ✓")
+            except Exception as e:
+                print(f"[FacePlatform] MediaPipe model failed ({e}), trying LBF")
+
+        if self._mp_detector is None and landmark_mode in ("auto", "lbf") and lbf_model_path:
             try:
                 self._lbf_detector = LBFLandmarkDetector(lbf_model_path)
                 print(f"[FacePlatform] LBF 68-point landmark model loaded ✓")
@@ -134,6 +169,23 @@ class FacePlatform:
             self.recognizer.load(recognizer_db_path)
             print(f"[FacePlatform] Recognizer DB loaded — "
                   f"known faces: {self.recognizer.known_labels}")
+
+        # ── Demographic estimator ────────────────────────────────────────────
+        self.demographic_estimator: Optional[DemographicEstimator] = None
+        if demographic_enabled and demographic_model_available(
+            age_model_path,
+            age_proto_path,
+            gender_model_path,
+            gender_proto_path,
+        ):
+            self.demographic_estimator = DemographicEstimator(
+                age_model_path=str(age_model_path),
+                age_proto_path=str(age_proto_path),
+                gender_model_path=str(gender_model_path),
+                gender_proto_path=str(gender_proto_path),
+                calibration_path=demographic_calibration_path,
+            )
+            print("[FacePlatform] Demographic age/gender models loaded ✓")
 
     # ── Enrollment ────────────────────────────────────────────────────────────
     def enroll(self, label: str, face_images: List[np.ndarray]) -> None:
@@ -227,7 +279,12 @@ class FacePlatform:
         landmarks = []
         if detections:
             bboxes = [d.bbox for d in detections]
-            if self._lbf_detector:
+            if self._mp_detector:
+                try:
+                    landmarks = self._mp_detector.detect(image)
+                except Exception:
+                    landmarks = self._region_detector.detect(image, bboxes)
+            elif self._lbf_detector:
                 try:
                     landmarks = self._lbf_detector.detect(image, bboxes)
                 except Exception:
@@ -243,7 +300,18 @@ class FacePlatform:
                 rec = self.recognizer.predict(roi)
                 recognitions.append(rec)
 
-        # 4. Visualization
+        # 4. Attribute estimates
+        attributes = []
+        for i, det in enumerate(detections):
+            landmark = landmarks[i] if i < len(landmarks) else None
+            demographics = (
+                self.demographic_estimator.predict(image, det)
+                if self.demographic_estimator
+                else None
+            )
+            attributes.append(estimate_face_attributes(image, det, landmark, demographics))
+
+        # 5. Visualization
         annotated = None
         if return_annotated or save_annotated:
             annotated = draw_faces(
@@ -262,6 +330,7 @@ class FacePlatform:
             faces=detections,
             landmarks=landmarks,
             recognitions=recognitions,
+            attributes=attributes,
             annotated_image=annotated if return_annotated else None,
         )
 
@@ -294,3 +363,13 @@ class FacePlatform:
         if self.recognizer:
             return self.recognizer.known_labels
         return []
+
+    def close(self) -> None:
+        if self._mp_detector:
+            self._mp_detector.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()

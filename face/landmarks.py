@@ -9,9 +9,21 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import os
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+try:
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
+except ImportError:
+    mp = None
+    mp_python = None
+    mp_vision = None
 
 
 # ─── Named landmark indices (68-point dlib/LBF convention) ───────────────────
@@ -41,6 +53,29 @@ LANDMARK_CONNECTIONS = [
 ]
 
 
+MP_LANDMARK_GROUPS = {
+    "silhouette": [
+        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397,
+        365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58,
+        132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10,
+    ],
+    "left_eye": [263, 249, 390, 373, 374, 380, 381, 382, 362, 466, 388, 387, 386, 385, 384, 398],
+    "right_eye": [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+    "left_eyebrow": [276, 283, 282, 295, 285, 300, 293, 334, 296, 336],
+    "right_eyebrow": [46, 53, 52, 65, 55, 70, 63, 105, 66, 107],
+    "left_iris": [473, 474, 475, 476, 477],
+    "right_iris": [468, 469, 470, 471, 472],
+    "lips_outer": [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185],
+    "lips_inner": [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191],
+    "nose": [1, 2, 98, 327, 4, 5, 6, 122, 351, 196, 419, 3, 51, 281, 248, 456],
+    "face_oval": [
+        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397,
+        365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58,
+        132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+    ],
+}
+
+
 @dataclass
 class LandmarkResult:
     """Full facial landmark result for one face."""
@@ -48,13 +83,17 @@ class LandmarkResult:
     groups: Dict[str, np.ndarray] = field(default_factory=dict)
     mode: str = "lbf"            # 'lbf' | 'region'
     face_index: int = 0
+    blendshapes: Dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.points is not None and len(self.points) == 68:
-            self.groups = {
-                name: self.points[idx]
-                for name, idx in LANDMARK_GROUPS.items()
-            }
+        if self.points is not None:
+            if len(self.points) == 68:
+                self.groups = {
+                    name: self.points[idx]
+                    for name, idx in LANDMARK_GROUPS.items()
+                }
+            # MediaPipe groups are pre-built because they use a different
+            # convention and include iris points.
 
     # ── Derived measurements ─────────────────────────────────────────────────
     def eye_distance(self) -> Optional[float]:
@@ -67,6 +106,9 @@ class LandmarkResult:
     def face_width(self) -> Optional[float]:
         if "jaw" in self.groups and len(self.groups["jaw"]) >= 2:
             return float(self.groups["jaw"][-1][0] - self.groups["jaw"][0][0])
+        if "face_oval" in self.groups and len(self.groups["face_oval"]) >= 2:
+            xs = self.groups["face_oval"][:, 0]
+            return float(xs.max() - xs.min())
         return None
 
     def mouth_open_ratio(self) -> Optional[float]:
@@ -81,22 +123,44 @@ class LandmarkResult:
             bot = self.groups["outer_lips"][9][1]   # bottom lip center
             jaw_h = self.groups["jaw"][8][1] - self.groups["jaw"][0][1]
             return float((bot - top) / jaw_h) if jaw_h > 0 else None
+        if (
+            "lips_inner" in self.groups
+            and "face_oval" in self.groups
+            and len(self.groups["lips_inner"]) >= 2
+        ):
+            lips = self.groups["lips_inner"]
+            face = self.groups["face_oval"]
+            mouth_h = float(lips[:, 1].max() - lips[:, 1].min())
+            face_h = float(face[:, 1].max() - face[:, 1].min())
+            return float(mouth_h / face_h) if face_h > 0 else None
         return None
 
     def yaw_estimate(self) -> Optional[float]:
         """Rough left-right head turn (degrees) from nose & jaw symmetry."""
         if (
-            "jaw" not in self.groups
-            or "nose_bridge" not in self.groups
-            or len(self.groups["jaw"]) < 2
+            "jaw" in self.groups
+            and "nose_bridge" in self.groups
+            and len(self.groups["jaw"]) >= 2
         ):
-            return None
-        jaw = self.groups["jaw"]
-        nose = self.groups["nose_bridge"].mean(axis=0)
-        jaw_mid_x = (jaw[0][0] + jaw[-1][0]) / 2
-        dx = float(nose[0] - jaw_mid_x)
-        face_w = float(jaw[-1][0] - jaw[0][0])
-        return float(np.degrees(np.arctan2(dx, face_w))) if face_w > 0 else None
+            jaw = self.groups["jaw"]
+            nose = self.groups["nose_bridge"].mean(axis=0)
+            jaw_mid_x = (jaw[0][0] + jaw[-1][0]) / 2
+            dx = float(nose[0] - jaw_mid_x)
+            face_w = float(jaw[-1][0] - jaw[0][0])
+            return float(np.degrees(np.arctan2(dx, face_w))) if face_w > 0 else None
+        if (
+            "left_eye" in self.groups
+            and "right_eye" in self.groups
+            and "nose" in self.groups
+        ):
+            left_eye = self.groups["left_eye"].mean(axis=0)
+            right_eye = self.groups["right_eye"].mean(axis=0)
+            nose = self.groups["nose"].mean(axis=0)
+            eye_mid_x = float((left_eye[0] + right_eye[0]) / 2)
+            eye_dist = float(np.linalg.norm(left_eye - right_eye))
+            if eye_dist > 0:
+                return float(np.degrees(np.arctan2(float(nose[0] - eye_mid_x), eye_dist)))
+        return None
 
     def to_dict(self) -> dict:
         return {
@@ -111,6 +175,7 @@ class LandmarkResult:
                 "mouth_open_ratio": self.mouth_open_ratio(),
                 "yaw_estimate_deg": self.yaw_estimate(),
             },
+            "blendshapes": {k: round(v, 4) for k, v in self.blendshapes.items()},
         }
 
 
@@ -140,6 +205,75 @@ class LBFLandmarkDetector:
             pts = lm[0].reshape(-1, 2).astype(float)
             results.append(LandmarkResult(points=pts, mode="lbf", face_index=i))
         return results
+
+
+class MediaPipeLandmarkDetector:
+    """
+    478-point landmark detector using MediaPipe FaceLandmarker Tasks API.
+    Adds iris landmarks (points 468-477) on top of the face mesh.
+    """
+
+    def __init__(self, model_path: str, num_faces: int = 10):
+        if mp is None or mp_python is None or mp_vision is None:
+            raise ImportError("mediapipe is not installed")
+        if not Path(model_path).exists():
+            raise FileNotFoundError(f"MediaPipe model not found: {model_path}")
+
+        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        options = mp_vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=True,
+            output_facial_transformation_matrixes=False,
+            num_faces=num_faces,
+            min_face_detection_confidence=0.4,
+            min_face_presence_confidence=0.4,
+            min_tracking_confidence=0.4,
+            running_mode=mp_vision.RunningMode.IMAGE,
+        )
+        self.landmarker = mp_vision.FaceLandmarker.create_from_options(options)
+        self._num_faces = num_faces
+
+    def detect(self, image: np.ndarray, face_bboxes=None) -> List["LandmarkResult"]:
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        detection_result = self.landmarker.detect(mp_image)
+
+        results = []
+        h, w = image.shape[:2]
+        for i, face_landmarks in enumerate(detection_result.face_landmarks):
+            pts = np.array([[lm.x * w, lm.y * h] for lm in face_landmarks], dtype=float)
+            groups: Dict[str, np.ndarray] = {}
+            for name, indices in MP_LANDMARK_GROUPS.items():
+                valid = [idx for idx in indices if idx < len(pts)]
+                if valid:
+                    groups[name] = pts[valid]
+            blendshapes = {}
+            if i < len(detection_result.face_blendshapes):
+                blendshapes = {
+                    item.category_name: float(item.score)
+                    for item in detection_result.face_blendshapes[i]
+                }
+
+            results.append(LandmarkResult(
+                points=pts,
+                groups=groups,
+                mode="mediapipe_478",
+                face_index=i,
+                blendshapes=blendshapes,
+            ))
+
+        return results
+
+    def close(self) -> None:
+        if getattr(self, "landmarker", None) is not None:
+            self.landmarker.close()
+            self.landmarker = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class RegionLandmarkDetector:
