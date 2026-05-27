@@ -4731,7 +4731,10 @@ app = FastAPI(
 try:
     from kyc.index import add_kyc_routes
 except ModuleNotFoundError:
-    add_kyc_routes = None
+    try:
+        from index import add_kyc_routes
+    except ModuleNotFoundError:
+        add_kyc_routes = None
 
 if add_kyc_routes is not None:
     add_kyc_routes(app)
@@ -5376,8 +5379,9 @@ def main() -> None:
         elif args.serve:
             import uvicorn
 
+            app_target = "kyc.ocr_service:app" if __package__ else "ocr_service:app"
             uvicorn.run(
-                "ocr_service:app",
+                app_target,
                 host=args.host,
                 port=args.port,
                 workers=max(args.workers, 1),

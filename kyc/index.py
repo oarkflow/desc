@@ -13,17 +13,30 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.datastructures import FormData, UploadFile as StarletteUploadFile
 
-from kyc.kyc import (
-    DOCUMENT_TYPES,
-    FaceMatchService,
-    KYCRepository,
-    LivenessService,
-    LocalEvidenceStorage,
-    OCRGatewayClient,
-    OCRProfileMapper,
-    decode_data_url,
-)
-from kyc.core.liveness import AntiSpoofingProvider
+try:  # pragma: no cover - supports running from repository root
+    from kyc.kyc import (
+        DOCUMENT_TYPES,
+        FaceMatchService,
+        KYCRepository,
+        LivenessService,
+        LocalEvidenceStorage,
+        OCRGatewayClient,
+        OCRProfileMapper,
+        decode_data_url,
+    )
+    from kyc.core.liveness import AntiSpoofingProvider
+except ModuleNotFoundError:  # pragma: no cover - supports `cd kyc && python ocr_service.py`
+    from kyc import (
+        DOCUMENT_TYPES,
+        FaceMatchService,
+        KYCRepository,
+        LivenessService,
+        LocalEvidenceStorage,
+        OCRGatewayClient,
+        OCRProfileMapper,
+        decode_data_url,
+    )
+    from core.liveness import AntiSpoofingProvider
 
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -141,7 +154,10 @@ async def identity_portrait(request: Request):
         if image is None:
             return json_error("Invalid portrait image")
 
-        from kyc.face import FacePlatform
+        try:
+            from kyc.face import FacePlatform
+        except ModuleNotFoundError:
+            from face import FacePlatform
 
         model_dir = Path(__file__).resolve().parent / "models"
         mediapipe_model = model_dir / "face_landmarker.task"
