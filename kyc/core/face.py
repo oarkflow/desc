@@ -7,6 +7,43 @@ import numpy as np
 
 from kyc.core.utils import cosine_similarity, normalize_vector
 
+
+MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
+
+
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_det_size(value):
+    if not value:
+        return (640, 640)
+    parts = [part.strip() for part in value.replace("x", ",").split(",") if part.strip()]
+    if len(parts) != 2:
+        return (640, 640)
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return (640, 640)
+
+
+def public_face_box(face_box):
+    safe = {}
+    for key, value in (face_box or {}).items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, np.ndarray):
+            safe[key] = value.tolist()
+        elif isinstance(value, (np.floating, np.integer)):
+            safe[key] = value.item()
+        else:
+            safe[key] = value
+    return safe
+
+
 class FaceRecognitionProvider:
     provider_name = "base"
     model_version = "none"
@@ -25,7 +62,7 @@ class LocalONNXFaceRecognitionProvider(FaceRecognitionProvider):
     provider_name = "local_onnx"
 
     def __init__(self, model_path=None):
-        self.model_path = Path(model_path or os.environ.get("FACE_RECOGNITION_MODEL", "models/arcface.onnx"))
+        self.model_path = Path(model_path or os.environ.get("FACE_RECOGNITION_MODEL", MODEL_DIR / "arcface.onnx"))
         self.model_version = self.model_path.name
         self.session = None
         cascade_dir = Path(cv2.data.haarcascades)
@@ -86,10 +123,103 @@ class LocalONNXFaceRecognitionProvider(FaceRecognitionProvider):
         return np.transpose(normalized, (2, 0, 1))[None, :, :, :]
 
 
+class InsightFaceRecognitionProvider(FaceRecognitionProvider):
+    provider_name = "insightface"
+
+    def __init__(self, model_name=None, model_root=None, det_size=None):
+        self.model_name = model_name or os.environ.get("INSIGHTFACE_MODEL_NAME", "buffalo_l")
+        self.model_root = Path(model_root or os.environ.get("INSIGHTFACE_MODEL_ROOT", MODEL_DIR / "insightface"))
+        self.det_size = det_size or _parse_det_size(os.environ.get("INSIGHTFACE_DET_SIZE"))
+        self.model_version = self.model_name
+        self.app = None
+        self.load_error = None
+
+        expected_model_dir = self.model_root / "models" / self.model_name
+        allow_download = _env_flag("INSIGHTFACE_ALLOW_DOWNLOAD", False)
+        if not expected_model_dir.exists() and not allow_download:
+            self.load_error = (
+                f"InsightFace model artifact is missing at {expected_model_dir}. "
+                "Place the model there or set INSIGHTFACE_ALLOW_DOWNLOAD=true during setup."
+            )
+            return
+
+        try:
+            from insightface.app import FaceAnalysis
+        except Exception as error:
+            self.load_error = f"insightface is required for InsightFace recognition: {error}"
+            return
+
+        try:
+            self.app = FaceAnalysis(
+                name=self.model_name,
+                root=str(self.model_root),
+                providers=["CPUExecutionProvider"],
+            )
+            self.app.prepare(ctx_id=-1, det_size=self.det_size)
+        except Exception as error:
+            self.app = None
+            self.load_error = f"InsightFace model could not be loaded: {error}"
+
+    @property
+    def available(self):
+        return self.app is not None
+
+    def detect_faces(self, image):
+        if image is None or not self.available:
+            return []
+        faces = self.app.get(image)
+        results = []
+        image_h, image_w = image.shape[:2]
+        for face in faces:
+            x1, y1, x2, y2 = [int(round(value)) for value in face.bbox.tolist()]
+            x1 = max(0, min(x1, image_w - 1))
+            y1 = max(0, min(y1, image_h - 1))
+            x2 = max(x1 + 1, min(x2, image_w))
+            y2 = max(y1 + 1, min(y2, image_h))
+            width = x2 - x1
+            height = y2 - y1
+            det_score = float(getattr(face, "det_score", 0.0) or 0.0)
+            area_ratio = (width * height) / max(float(image_w * image_h), 1.0)
+            face_box = {
+                "x": x1,
+                "y": y1,
+                "width": width,
+                "height": height,
+                "quality": round(min(1.0, max(det_score, area_ratio * 8)), 4),
+                "det_score": round(det_score, 4),
+            }
+            if getattr(face, "kps", None) is not None:
+                face_box["landmarks"] = face.kps.astype(float).round(4).tolist()
+            if getattr(face, "embedding", None) is not None:
+                face_box["_embedding"] = normalize_vector(face.embedding.reshape(-1))
+            results.append(face_box)
+        return sorted(results, key=lambda item: item["width"] * item["height"], reverse=True)
+
+    def extract_embedding(self, image, face_box):
+        if not self.available:
+            return None
+        embedded = (face_box or {}).get("_embedding")
+        if embedded is not None:
+            return normalize_vector(embedded)
+        faces = self.detect_faces(image)
+        if not faces:
+            return None
+        return faces[0].get("_embedding")
+
+
+def default_face_provider():
+    configured = os.environ.get("FACE_RECOGNITION_PROVIDER", "auto").strip().lower()
+    if configured in {"insightface", "auto"}:
+        insightface_provider = InsightFaceRecognitionProvider()
+        if configured == "insightface" or insightface_provider.available:
+            return insightface_provider
+    return LocalONNXFaceRecognitionProvider()
+
+
 class FaceMatchService:
     def __init__(self, repository=None, provider=None):
         self.repository = repository
-        self.provider = provider or LocalONNXFaceRecognitionProvider()
+        self.provider = provider or default_face_provider()
 
     def score(self, document_path, selfie_path):
         doc_result = self.extract_embedding_from_file(document_path, "document")
@@ -190,7 +320,10 @@ class FaceMatchService:
             return {"status": "needs_manual_review", "reason": "Image could not be read.", "source_type": source_type}
         faces = self.provider.detect_faces(image)
         if not faces:
-            return {"status": "needs_manual_review", "reason": "No face detected.", "source_type": source_type}
+            reason = "No face detected."
+            if not getattr(self.provider, "available", True):
+                reason = getattr(self.provider, "load_error", None) or reason
+            return {"status": "needs_manual_review", "reason": reason, "source_type": source_type}
         if not getattr(self.provider, "available", True):
             return {
                 "status": "needs_manual_review",
@@ -198,7 +331,7 @@ class FaceMatchService:
                 "source_type": source_type,
                 "provider": self.provider.provider_name,
                 "model_version": self.provider.model_version,
-                "face_box": faces[0],
+                "face_box": public_face_box(faces[0]),
                 "quality_score": faces[0].get("quality"),
             }
         embedding = self.provider.extract_embedding(image, faces[0])
@@ -210,8 +343,6 @@ class FaceMatchService:
             "embedding": embedding,
             "provider": self.provider.provider_name,
             "model_version": self.provider.model_version,
-            "face_box": faces[0],
+            "face_box": public_face_box(faces[0]),
             "quality_score": faces[0].get("quality"),
         }
-
-

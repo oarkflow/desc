@@ -312,6 +312,21 @@ All admin API routes are under `/admin/api` and require the same gateway API key
 
 OCR service settings are configured on the `ocr` Compose service. Common values include `OCR_WORKERS`, `OCR_LOG_LEVEL`, `OCR_KEEP_ALIVE`, `OCR_DEVICE`, `OCR_USE_GPU`, `OCR_GPU_ID`, and `OCR_CACHE_DIR`.
 
+Face recognition and liveness model settings use `kyc/models` as the canonical artifact directory:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FACE_RECOGNITION_PROVIDER` | `auto` | Uses InsightFace when its artifact is present, otherwise falls back to the local ONNX provider. Set `insightface` to require InsightFace. |
+| `INSIGHTFACE_MODEL_ROOT` | `kyc/models/insightface` | Root directory for InsightFace artifacts such as `models/buffalo_l`. |
+| `INSIGHTFACE_MODEL_NAME` | `buffalo_l` | InsightFace model pack name. |
+| `INSIGHTFACE_ALLOW_DOWNLOAD` | `false` | Allows `scripts/download_models.py` or provider setup to fetch the InsightFace pack during controlled setup. |
+| `FACE_RECOGNITION_MODEL` | `kyc/models/arcface.onnx` | Local ONNX fallback recognition model path. |
+| `ANTI_SPOOF_ENABLED` | auto when model exists | Enables ONNX anti-spoofing inference for liveness frames and videos. |
+| `ANTI_SPOOF_MODEL_PATH` | `kyc/models/anti_spoof.onnx` | Vetted anti-spoofing ONNX artifact path. |
+| `ANTI_SPOOF_MODEL_URL` | empty | Optional setup-time URL used by `scripts/download_models.py` to fetch the anti-spoofing artifact. |
+| `ANTI_SPOOF_LIVE_THRESHOLD` | `0.65` | Minimum live probability required to avoid a spoof result. |
+| `ANTI_SPOOF_INPUT_SIZE` | `80,80` | Anti-spoofing model input size, configurable for the chosen artifact. |
+
 ## Operational Notes
 
 - The gateway reads the full request body up to `OCR_MAX_FILE_MB` before forwarding it upstream.
