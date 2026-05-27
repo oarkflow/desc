@@ -30,6 +30,163 @@ Health check:
 curl http://localhost:8000/healthz
 ```
 
+## End-To-End Local Testing Runbook
+
+Use this flow when you want to test the Python OCR/KYC service, the Go gateway, the browser identity workbench, and curl requests from a local checkout.
+
+Install/setup once:
+
+```sh
+make -C kyc setup
+```
+
+Start the Python OCR/KYC service on `8001` from the repository root:
+
+```sh
+MPLCONFIGDIR=kyc/.cache/matplotlib \
+KYC_DB=kyc/kyc.db \
+EVIDENCE_DIR=kyc/evidence \
+DOCUMENT_TYPES_CONFIG=kyc/config/document_types.yaml \
+OCR_PORT=8001 \
+kyc/.venv/bin/python -m kyc.ocr_service \
+  --serve \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --log-level warning
+```
+
+Start the Go gateway on `8002` from a second terminal:
+
+```sh
+cd kyc
+GATEWAY_PORT=8002 \
+GATEWAY_OCR_UPSTREAM=http://127.0.0.1:8001 \
+GATEWAY_API_KEY=change-me \
+GATEWAY_DEFAULT_ACCURACY_MODE=accurate \
+GATEWAY_DEFAULT_RETRY=true \
+go run ./cmd/gateway
+```
+
+Open the browser workbench:
+
+```text
+http://localhost:8002/identity?api_key=change-me
+```
+
+Smoke-check both services:
+
+```sh
+curl -sS http://localhost:8001/healthz
+curl -sS http://localhost:8002/healthz
+curl -sS -H "X-API-Key: change-me" http://localhost:8002/metrics
+```
+
+Document OCR with automatic document type detection:
+
+```sh
+curl -sS -X POST "http://localhost:8002/ocr?values_only=true&include_stats=true" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Document OCR with full evidence, document face/photo detection, document anti-spoofing, objects, and tamper summary:
+
+```sh
+curl -sS -X POST "http://localhost:8002/ocr?values_only=false&detect_objects=true&accuracy_mode=accurate&retry=true" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Describe/tamper endpoint:
+
+```sh
+curl -sS -X POST "http://localhost:8002/describe" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/citizenship.jpg"
+```
+
+Portrait/face analysis with anti-spoofing:
+
+```sh
+curl -sS -X POST "http://localhost:8002/identity/api/portrait" \
+  -H "X-API-Key: change-me" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+```
+
+Liveness frame challenge:
+
+```sh
+curl -sS -X POST "http://localhost:8002/identity/api/liveness/frame?session_id=test-session&challenge=blink&challenge=turn_left&challenge=turn_right&challenge=look_center" \
+  -H "X-API-Key: change-me" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+```
+
+Complete liveness:
+
+```sh
+curl -sS -X POST "http://localhost:8002/identity/api/liveness/complete?session_id=test-session&challenge=blink&challenge=turn_left&challenge=turn_right&challenge=look_center" \
+  -H "X-API-Key: change-me"
+```
+
+Admin UI and config smoke checks:
+
+```text
+http://localhost:8002/admin?api_key=change-me
+```
+
+```sh
+curl -sS -H "X-API-Key: change-me" http://localhost:8002/admin/api/config
+
+curl -sS -X POST "http://localhost:8002/admin/api/preview" \
+  -H "X-API-Key: change-me" \
+  -F "document_type=nepali_national_id" \
+  -F "values_only=false" \
+  -F "include_stats=true" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Direct Python KYC session flow:
+
+```sh
+curl -sS -X POST http://localhost:8001/api/kyc/sessions > /tmp/kyc-session.json
+
+SESSION_ID="$(jq -r .session_id /tmp/kyc-session.json)"
+SESSION_TOKEN="$(jq -r .session_token /tmp/kyc-session.json)"
+
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/profile" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"full_name":"Matrix Test","date_of_birth":"1990-01-01","nationality":"Nepal","address":"Kathmandu","document_type":"national_id","document_number":"123-456-7890"}'
+
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/documents" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -F "document_type=national_id" \
+  -F "side=front" \
+  -F "file=@kyc/testdata/national-id.webp"
+
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/selfie" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/liveness/frame" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/liveness/complete" \
+  -H "X-Session-Token: ${SESSION_TOKEN}"
+
+curl -sS "http://localhost:8001/api/kyc/sessions/${SESSION_ID}" \
+  -H "X-Session-Token: ${SESSION_TOKEN}"
+```
+
+Useful verification commands:
+
+```sh
+go test ./cmd/gateway
+kyc/.venv/bin/python -m py_compile kyc/ocr/service.py kyc/index.py kyc/kyc.py kyc/core/__init__.py kyc/blink.py
+make -C kyc image-matrix
+```
+
 ## Complete Local Examples
 
 Run the Python OCR/KYC HTTP server locally:
