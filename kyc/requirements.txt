@@ -5,7 +5,8 @@ itsdangerous
 requests
 
 pillow==11.3.0
-opencv-contrib-python-headless==4.12.0.88
+opencv-contrib-python-headless==4.10.0.84
+opencv-contrib-python==4.10.0.84
 numpy==1.26.4
 scipy
 scikit-image==0.25.2

@@ -1,4 +1,8 @@
 import os
+import shutil
+import tempfile
+import zipfile
+from hashlib import sha256
 from pathlib import Path
 from urllib.request import urlretrieve
 
@@ -35,62 +39,116 @@ GENDER_MODEL_URL = "https://github.com/GilLevi/AgeGenderDeepLearning/raw/master/
 GENDER_MODEL_NAME = "gender_net.caffemodel"
 INSIGHTFACE_ROOT = MODEL_DIR / "insightface"
 INSIGHTFACE_MODEL_NAME = os.environ.get("INSIGHTFACE_MODEL_NAME", "buffalo_l")
-ANTI_SPOOF_MODEL_URL = os.environ.get("ANTI_SPOOF_MODEL_URL")
+INSIGHTFACE_MODEL_URLS = {
+    "buffalo_l": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+}
+INSIGHTFACE_MODEL_FILES = {
+    "buffalo_l": {
+        "1k3d68.onnx",
+        "2d106det.onnx",
+        "det_10g.onnx",
+        "genderage.onnx",
+        "w600k_r50.onnx",
+    },
+}
+ANTI_SPOOF_MODEL_URL = os.environ.get(
+    "ANTI_SPOOF_MODEL_URL",
+    "https://huggingface.co/garciafido/minifasnet-v2-anti-spoofing-onnx/resolve/main/minifasnet_v2.onnx",
+)
 ANTI_SPOOF_MODEL_NAME = os.environ.get("ANTI_SPOOF_MODEL_NAME", "anti_spoof.onnx")
+ANTI_SPOOF_MODEL_SHA256 = os.environ.get(
+    "ANTI_SPOOF_MODEL_SHA256",
+    "d7b3cd9ba8a7ceb13baa8c4720902e27ca3112eff52f926c08804af6b6eecc7b",
+)
 
 
-def download_if_missing(url, target):
-    if not target.exists():
+def file_sha256(path):
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_sha256(path, expected):
+    if expected and file_sha256(path) != expected:
+        raise RuntimeError(f"Checksum mismatch for {path}")
+
+
+def download_if_missing(url, target, expected_sha256=None):
+    if target.exists():
+        verify_sha256(target, expected_sha256)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(url, target)
+        verify_sha256(target, expected_sha256)
     return target
+
+
+def insightface_model_ready(model_dir, model_name):
+    expected_files = INSIGHTFACE_MODEL_FILES.get(model_name)
+    if not expected_files:
+        return model_dir.exists()
+    return all((model_dir / name).exists() for name in expected_files)
+
+
+def download_insightface_model(model_name):
+    insightface_dir = INSIGHTFACE_ROOT / "models" / model_name
+    if insightface_model_ready(insightface_dir, model_name):
+        return insightface_dir
+
+    url = os.environ.get("INSIGHTFACE_MODEL_URL") or INSIGHTFACE_MODEL_URLS.get(model_name)
+    if not url:
+        raise RuntimeError(
+            f"No InsightFace download URL configured for {model_name!r}. "
+            "Set INSIGHTFACE_MODEL_URL to a zip file containing the model ONNX files."
+        )
+
+    insightface_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="insightface-", dir="/tmp") as tmp:
+        archive = Path(tmp) / f"{model_name}.zip"
+        urlretrieve(url, archive)
+        extract_dir = Path(tmp) / "extract"
+        extract_dir.mkdir()
+        with zipfile.ZipFile(archive) as zip_file:
+            zip_file.extractall(extract_dir)
+
+        source_dir = extract_dir / model_name if (extract_dir / model_name).is_dir() else extract_dir
+        for item in source_dir.iterdir():
+            target = insightface_dir / item.name
+            if item.is_file():
+                shutil.copy2(item, target)
+            elif item.is_dir():
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(item, target)
+
+    if not insightface_model_ready(insightface_dir, model_name):
+        raise RuntimeError(f"Downloaded InsightFace model is incomplete: {insightface_dir}")
+    return insightface_dir
 
 
 def main():
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    target = MODEL_DIR / MODEL_NAME
 
-    download_if_missing(MODEL_URL, target)
-
-    print(f"YOLOv8n ready at {target}")
-
-    face_target = MODEL_DIR / FACE_LANDMARKER_NAME
-    download_if_missing(FACE_LANDMARKER_URL, face_target)
-    print(f"MediaPipe face landmarker ready at {face_target}")
-
-    for url, name in (
-        (LBF_URL, LBF_NAME),
-        (YUNET_URL, YUNET_NAME),
-        (SFACE_URL, SFACE_NAME),
-        (AGE_PROTO_URL, AGE_PROTO_NAME),
-        (AGE_MODEL_URL, AGE_MODEL_NAME),
-        (GENDER_PROTO_URL, GENDER_PROTO_NAME),
-        (GENDER_MODEL_URL, GENDER_MODEL_NAME),
+    for label, url, name, checksum in (
+        ("YOLOv8n", MODEL_URL, MODEL_NAME, None),
+        ("MediaPipe face landmarker", FACE_LANDMARKER_URL, FACE_LANDMARKER_NAME, None),
+        ("OpenCV model", LBF_URL, LBF_NAME, None),
+        ("OpenCV model", YUNET_URL, YUNET_NAME, None),
+        ("OpenCV model", SFACE_URL, SFACE_NAME, None),
+        ("OpenCV model", AGE_PROTO_URL, AGE_PROTO_NAME, None),
+        ("OpenCV model", AGE_MODEL_URL, AGE_MODEL_NAME, None),
+        ("OpenCV model", GENDER_PROTO_URL, GENDER_PROTO_NAME, None),
+        ("OpenCV model", GENDER_MODEL_URL, GENDER_MODEL_NAME, None),
+        ("Anti-spoofing ONNX model", ANTI_SPOOF_MODEL_URL, ANTI_SPOOF_MODEL_NAME, ANTI_SPOOF_MODEL_SHA256),
     ):
         target = MODEL_DIR / name
-        download_if_missing(url, target)
-        print(f"OpenCV model ready at {target}")
+        download_if_missing(url, target, checksum)
+        print(f"{label} ready at {target}")
 
-    insightface_dir = INSIGHTFACE_ROOT / "models" / INSIGHTFACE_MODEL_NAME
-    if insightface_dir.exists():
-        print(f"InsightFace model ready at {insightface_dir}")
-    elif os.environ.get("INSIGHTFACE_ALLOW_DOWNLOAD", "").strip().lower() in {"1", "true", "yes", "on"}:
-        from insightface.app import FaceAnalysis
-
-        app = FaceAnalysis(name=INSIGHTFACE_MODEL_NAME, root=str(INSIGHTFACE_ROOT), providers=["CPUExecutionProvider"])
-        app.prepare(ctx_id=-1, det_size=(640, 640))
-        print(f"InsightFace model ready at {insightface_dir}")
-    else:
-        print(
-            "InsightFace model not downloaded. Set INSIGHTFACE_ALLOW_DOWNLOAD=true "
-            f"to fetch {INSIGHTFACE_MODEL_NAME} into {INSIGHTFACE_ROOT}."
-        )
-
-    if ANTI_SPOOF_MODEL_URL:
-        anti_spoof_target = MODEL_DIR / ANTI_SPOOF_MODEL_NAME
-        download_if_missing(ANTI_SPOOF_MODEL_URL, anti_spoof_target)
-        print(f"Anti-spoofing ONNX model ready at {anti_spoof_target}")
-    else:
-        print("Anti-spoofing model URL not configured. Set ANTI_SPOOF_MODEL_URL to download a vetted ONNX artifact.")
+    insightface_dir = download_insightface_model(INSIGHTFACE_MODEL_NAME)
+    print(f"InsightFace model ready at {insightface_dir}")
 
 
 if __name__ == "__main__":

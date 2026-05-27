@@ -8,11 +8,22 @@ from check_common import KYC_ROOT, default_test_image, existing_path, print_json
 MODEL_DIR = KYC_ROOT / "models"
 
 
+def default_face_image():
+    path = Path("/tmp/kyc_identity_selfie.jpg")
+    if path.exists():
+        return path
+    from PIL import Image
+    from skimage import data
+
+    Image.fromarray(data.astronaut()).save(path, format="JPEG")
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Check face detection, landmarks, demographics, and recognition.")
-    parser.add_argument("--image", type=existing_path, default=default_test_image("citizenship.jpg"))
+    parser.add_argument("--image", type=existing_path, default=default_face_image())
     parser.add_argument("--detection-mode", default="auto", choices=["auto", "yunet", "multiscale", "haar"])
-    parser.add_argument("--landmark-mode", default="auto", choices=["auto", "mediapipe", "lbf", "region"])
+    parser.add_argument("--landmark-mode", default="mediapipe", choices=["auto", "mediapipe", "lbf", "region"])
     parser.add_argument("--min-faces", type=int, default=1)
     parser.add_argument("--require-landmarks", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--require-recognition", action=argparse.BooleanOptionalAction, default=True)
@@ -59,8 +70,26 @@ def main():
     require(result.num_faces >= args.min_faces, f"Face analysis found {result.num_faces} faces, expected at least {args.min_faces}.")
     if args.require_landmarks:
         require(any(face.get("landmarks") for face in payload["faces"]), "No landmarks were returned.")
+        require(
+            any(
+                (face.get("landmarks") or {}).get("mode") == "mediapipe_478"
+                and (face.get("landmarks") or {}).get("num_points") == 478
+                for face in payload["faces"]
+            ),
+            "No 478-point MediaPipe landmarks were returned.",
+        )
     if args.require_recognition:
         require(any(face.get("recognition") and not face["recognition"].get("is_unknown") for face in payload["faces"]), "Recognition did not identify the enrolled fixture face.")
+        require(
+            any(
+                face.get("recognition")
+                and not face["recognition"].get("is_unknown")
+                and (face.get("landmarks") or {}).get("mode") == "mediapipe_478"
+                and (face.get("landmarks") or {}).get("num_points") == 478
+                for face in payload["faces"]
+            ),
+            "Recognition did not include a matching 478-point MediaPipe landmark result.",
+        )
     if args.require_demographics:
         require(any(face.get("attributes", {}).get("demographics") for face in payload["faces"]), "Demographic model output was not returned.")
 

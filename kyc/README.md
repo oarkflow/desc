@@ -319,13 +319,17 @@ Face recognition and liveness model settings use `kyc/models` as the canonical a
 | `FACE_RECOGNITION_PROVIDER` | `auto` | Uses InsightFace when its artifact is present, otherwise falls back to the local ONNX provider. Set `insightface` to require InsightFace. |
 | `INSIGHTFACE_MODEL_ROOT` | `kyc/models/insightface` | Root directory for InsightFace artifacts such as `models/buffalo_l`. |
 | `INSIGHTFACE_MODEL_NAME` | `buffalo_l` | InsightFace model pack name. |
-| `INSIGHTFACE_ALLOW_DOWNLOAD` | `false` | Allows `scripts/download_models.py` or provider setup to fetch the InsightFace pack during controlled setup. |
+| `INSIGHTFACE_MODEL_URL` | official `buffalo_l` release URL | Optional zip URL override for `scripts/download_models.py`. |
 | `FACE_RECOGNITION_MODEL` | `kyc/models/arcface.onnx` | Local ONNX fallback recognition model path. |
 | `ANTI_SPOOF_ENABLED` | auto when model exists | Enables ONNX anti-spoofing inference for liveness frames and videos. |
 | `ANTI_SPOOF_MODEL_PATH` | `kyc/models/anti_spoof.onnx` | Vetted anti-spoofing ONNX artifact path. |
-| `ANTI_SPOOF_MODEL_URL` | empty | Optional setup-time URL used by `scripts/download_models.py` to fetch the anti-spoofing artifact. |
+| `ANTI_SPOOF_MODEL_URL` | MiniFASNet-V2 ONNX URL | Optional setup-time URL override used by `scripts/download_models.py` to fetch the anti-spoofing artifact. |
+| `ANTI_SPOOF_MODEL_SHA256` | default artifact checksum | Expected SHA-256 checksum for the anti-spoofing download. |
 | `ANTI_SPOOF_LIVE_THRESHOLD` | `0.65` | Minimum live probability required to avoid a spoof result. |
 | `ANTI_SPOOF_INPUT_SIZE` | `80,80` | Anti-spoofing model input size, configurable for the chosen artifact. |
+| `ANTI_SPOOF_LIVE_INDEX` | `0` | Class index treated as live after softmax. |
+| `ANTI_SPOOF_CROP_SCALE` | `2.7` | Face crop scale used before resizing for anti-spoofing inference. |
+| `ANTI_SPOOF_COLOR_ORDER` | `bgr` | Input channel order for anti-spoofing preprocessing; set `rgb` for models that require RGB. |
 
 ## Operational Notes
 

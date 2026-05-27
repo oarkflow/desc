@@ -21,6 +21,7 @@ from .landmarks import (
     MediaPipeLandmarkDetector,
     RegionLandmarkDetector,
     LandmarkResult,
+    MEDIAPIPE_LANDMARK_COUNT,
 )
 from .recognizer import FusionRecognizer, RecognitionResult
 from .attributes import (
@@ -106,7 +107,7 @@ class FacePlatform:
     All-in-one face analysis platform.
 
     Usage:
-        platform = FacePlatform(lbf_model_path="models/lbfmodel.yaml")
+        platform = FacePlatform(mediapipe_model_path="models/face_landmarker.task")
         platform.enroll_from_folder("alice", "photos/alice/")
         result = platform.analyze("photo.jpg", save_annotated="output.jpg")
         result.print_summary()
@@ -119,7 +120,7 @@ class FacePlatform:
         yunet_model_path: Optional[str] = None,
         recognizer_db_path: Optional[str] = None,
         detection_mode: str = "multiscale",   # 'haar' | 'multiscale' | 'yunet'
-        landmark_mode: str = "auto",          # 'auto' | 'mediapipe' | 'lbf' | 'region'
+        landmark_mode: str = "mediapipe",     # 'mediapipe' | 'auto' | 'lbf' | 'region'
         min_face_size: int = 30,
         recognition_enabled: bool = True,
         lbph_threshold: float = 80.0,
@@ -147,11 +148,28 @@ class FacePlatform:
         self._lbf_detector: Optional[LBFLandmarkDetector] = None
         self._region_detector = RegionLandmarkDetector()
 
+        valid_landmark_modes = {"auto", "mediapipe", "lbf", "region"}
+        if landmark_mode not in valid_landmark_modes:
+            raise ValueError(
+                f"Unsupported landmark_mode={landmark_mode!r}; "
+                f"expected one of {sorted(valid_landmark_modes)}"
+            )
+        if landmark_mode == "mediapipe" and not mediapipe_model_path:
+            raise FileNotFoundError(
+                "MediaPipe 478-point landmarks are required, but no "
+                "face_landmarker.task model path was provided."
+            )
+
         if landmark_mode in ("auto", "mediapipe") and mediapipe_model_path:
             try:
                 self._mp_detector = MediaPipeLandmarkDetector(mediapipe_model_path)
                 print("[FacePlatform] MediaPipe 478-point landmark model loaded ✓")
             except Exception as e:
+                if landmark_mode == "mediapipe":
+                    raise RuntimeError(
+                        "MediaPipe 478-point landmark model is required for "
+                        "face detection/recognition, but it failed to load."
+                    ) from e
                 print(f"[FacePlatform] MediaPipe model failed ({e}), trying LBF")
 
         if self._mp_detector is None and landmark_mode in ("auto", "lbf") and lbf_model_path:
@@ -282,7 +300,10 @@ class FacePlatform:
             if self._mp_detector:
                 try:
                     landmarks = self._mp_detector.detect(image)
+                    self._require_478_landmarks(landmarks, expected_faces=len(detections))
                 except Exception:
+                    if self._landmark_mode == "mediapipe":
+                        raise
                     landmarks = self._region_detector.detect(image, bboxes)
             elif self._lbf_detector:
                 try:
@@ -373,3 +394,19 @@ class FacePlatform:
 
     def __exit__(self, exc_type, exc, tb):
         self.close()
+
+    @staticmethod
+    def _require_478_landmarks(landmarks: List[LandmarkResult], expected_faces: int) -> None:
+        if len(landmarks) < expected_faces:
+            raise RuntimeError(
+                "MediaPipe landmark detection must return a 478-point result "
+                f"for every detected face; got {len(landmarks)} landmark "
+                f"result(s) for {expected_faces} detected face(s)."
+            )
+        for landmark in landmarks:
+            if landmark.mode != "mediapipe_478" or len(landmark.points) != MEDIAPIPE_LANDMARK_COUNT:
+                raise RuntimeError(
+                    "MediaPipe landmark detection must return "
+                    f"{MEDIAPIPE_LANDMARK_COUNT} points per face; got "
+                    f"{len(landmark.points)} points in {landmark.mode!r} mode."
+                )

@@ -1,4 +1,4 @@
-.PHONY: setup models run check test clean
+.PHONY: setup models run check test image-matrix clean
 
 VENV_PYTHON := python3.12
 PYTHON := .venv/bin/python
@@ -29,6 +29,10 @@ check: setup
 
 test: setup
 	cd "$(ROOT)" && $(APP_ENV) kyc/$(PYTHON) -m unittest discover -s kyc/tests
+
+image-matrix: setup
+	mkdir -p "$(MPLCONFIGDIR)"
+	cd "$(ROOT)" && $(APP_ENV) kyc/$(PYTHON) kyc/scripts/run_image_feature_matrix.py
 
 clean:
 	rm -rf .venv .cache kyc.db kyc.db-* evidence

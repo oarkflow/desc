@@ -46,7 +46,9 @@ class AntiSpoofingProvider:
         self.model_path = Path(model_path or os.environ.get("ANTI_SPOOF_MODEL_PATH", MODEL_DIR / "anti_spoof.onnx"))
         self.threshold = float(threshold or os.environ.get("ANTI_SPOOF_LIVE_THRESHOLD", "0.65"))
         self.input_size = input_size or _parse_size(os.environ.get("ANTI_SPOOF_INPUT_SIZE"), (80, 80))
-        self.live_index = int(os.environ.get("ANTI_SPOOF_LIVE_INDEX", "1"))
+        self.live_index = int(os.environ.get("ANTI_SPOOF_LIVE_INDEX", "0"))
+        self.crop_scale = float(os.environ.get("ANTI_SPOOF_CROP_SCALE", "2.7"))
+        self.color_order = os.environ.get("ANTI_SPOOF_COLOR_ORDER", "bgr").strip().lower()
         self.enabled = _env_flag("ANTI_SPOOF_ENABLED", self.model_path.exists())
         self.session = None
         self.load_error = None
@@ -136,17 +138,21 @@ class AntiSpoofingProvider:
         y = max(int(face_box.get("y", 0)), 0)
         width = max(int(face_box.get("width", image_w)), 1)
         height = max(int(face_box.get("height", image_h)), 1)
-        pad = int(max(width, height) * 0.18)
-        x1 = max(x - pad, 0)
-        y1 = max(y - pad, 0)
-        x2 = min(x + width + pad, image_w)
-        y2 = min(y + height + pad, image_h)
+        side = max(width, height) * max(self.crop_scale, 1.0)
+        center_x = x + width / 2
+        center_y = y + height / 2
+        x1 = max(int(round(center_x - side / 2)), 0)
+        y1 = max(int(round(center_y - side / 2)), 0)
+        x2 = min(int(round(center_x + side / 2)), image_w)
+        y2 = min(int(round(center_y + side / 2)), image_h)
         return image[y1:y2, x1:x2]
 
     def preprocess(self, crop):
         resized = cv2.resize(crop, self.input_size)
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        return np.transpose(rgb, (2, 0, 1))[None, :, :, :]
+        if self.color_order == "rgb":
+            resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        normalized = resized.astype(np.float32) / 255.0
+        return np.transpose(normalized, (2, 0, 1))[None, :, :, :]
 
     def live_score(self, output):
         if output.size == 1:

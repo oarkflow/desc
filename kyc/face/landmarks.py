@@ -1,6 +1,7 @@
 """
 Facial Landmark Module
-Provides two backends:
+Provides three backends:
+  - MediaPipe (478-point): FaceLandmarker Tasks API with iris landmarks
   - LBF (68-point): cv2.face.FacemarkLBF, requires lbfmodel.yaml
   - Region-based (6-point): eyes, nose, mouth using bundled Haar cascades
 """
@@ -15,6 +16,8 @@ from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+MEDIAPIPE_LANDMARK_COUNT = 478
 
 try:
     import mediapipe as mp
@@ -242,6 +245,11 @@ class MediaPipeLandmarkDetector:
         h, w = image.shape[:2]
         for i, face_landmarks in enumerate(detection_result.face_landmarks):
             pts = np.array([[lm.x * w, lm.y * h] for lm in face_landmarks], dtype=float)
+            if len(pts) != MEDIAPIPE_LANDMARK_COUNT:
+                raise RuntimeError(
+                    f"MediaPipe FaceLandmarker returned {len(pts)} points; "
+                    f"expected {MEDIAPIPE_LANDMARK_COUNT}."
+                )
             groups: Dict[str, np.ndarray] = {}
             for name, indices in MP_LANDMARK_GROUPS.items():
                 valid = [idx for idx in indices if idx < len(pts)]

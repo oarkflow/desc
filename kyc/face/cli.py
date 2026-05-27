@@ -696,9 +696,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Path to LBF landmark model (lbfmodel.yaml)")
     parser.add_argument("--mediapipe-model", default=DEFAULT_MEDIAPIPE_MODEL,
                         help="Path to MediaPipe face_landmarker.task model")
-    parser.add_argument("--landmark-mode", default="auto",
+    parser.add_argument("--landmark-mode", default="mediapipe",
                         choices=("auto", "mediapipe", "lbf", "region"),
-                        help="Landmark backend to use")
+                        help="Landmark backend to use; mediapipe enforces 478-point landmarks")
     parser.add_argument("--min-face-size", type=int, default=80,
                         help="Minimum face size in pixels for Haar/multiscale detection")
     parser.add_argument("--yunet-model", default=DEFAULT_YUNET_MODEL,

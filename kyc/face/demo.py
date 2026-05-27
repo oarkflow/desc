@@ -3,7 +3,7 @@
 Demo & test script for kyc.face.
 Downloads a public domain face image and runs the full pipeline:
   - Face detection
-  - 68-point landmark extraction
+  - 478-point landmark extraction
   - Visualization
 """
 
@@ -25,6 +25,7 @@ except ModuleNotFoundError:
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 LBF_MODEL = str(Path(__file__).parent.parent / "models" / "lbfmodel.yaml")
+MEDIAPIPE_MODEL = str(Path(__file__).parent.parent / "models" / "face_landmarker.task")
 OUTPUT_DIR = Path(__file__).parent.parent / "face" / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -112,11 +113,15 @@ def run_demo():
     # ── Initialize platform ────────────────────────────────────────────────
     print("\n[1] Initializing FacePlatform...")
     use_lbf = Path(LBF_MODEL).exists()
-    print(f"    LBF landmark model: {'FOUND ✓' if use_lbf else 'NOT FOUND — using region fallback'}")
+    use_mediapipe = Path(MEDIAPIPE_MODEL).exists()
+    print(f"    MediaPipe 478 landmark model: {'FOUND ✓' if use_mediapipe else 'NOT FOUND'}")
+    print(f"    LBF landmark model: {'FOUND ✓' if use_lbf else 'NOT FOUND'}")
 
     platform = FacePlatform(
         lbf_model_path=LBF_MODEL if use_lbf else None,
+        mediapipe_model_path=MEDIAPIPE_MODEL if use_mediapipe else None,
         detection_mode="multiscale",
+        landmark_mode="mediapipe" if use_mediapipe else "auto",
         recognition_enabled=True,
     )
 

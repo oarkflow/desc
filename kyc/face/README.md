@@ -1,6 +1,6 @@
 # 🎯 Face Platform
 
-A production-quality Python platform for **face detection**, **68-point landmark extraction**, and **face recognition** — supporting every common image format.
+A production-quality Python platform for **face detection**, **478-point landmark extraction**, and **face recognition** — supporting every common image format.
 
 ---
 
@@ -9,8 +9,8 @@ A production-quality Python platform for **face detection**, **68-point landmark
 | Capability | Detail |
 |---|---|
 | **Detection** | Multi-scale Haar Cascade + profile detection with NMS |
-| **Landmarks** | 68-point LBF model (jaw, brows, eyes, nose, lips) |
-| **MediaPipe landmarks** | 478-point FaceLandmarker model with iris landmarks |
+| **Landmarks** | 478-point MediaPipe FaceLandmarker model with iris landmarks |
+| **Fallback landmarks** | Optional 68-point LBF or 6-point region landmarks when explicitly requested |
 | **Metrics** | Eye distance, face width, yaw angle, mouth-open ratio |
 | **Recognition** | Fusion of LBPH + HOG-cosine (no GPU, no DL framework needed) |
 | **Image formats** | JPEG, PNG, BMP, TIFF, WEBP, GIF, HEIC, RAW (NEF/CR2/ARW…) |
@@ -163,9 +163,9 @@ from kyc.face import FacePlatform
 # Initialize
 platform = FacePlatform(
     mediapipe_model_path="kyc/models/face_landmarker.task",  # 478-point MediaPipe
-    lbf_model_path="kyc/models/lbfmodel.yaml",   # 68-point landmarks
+    lbf_model_path="kyc/models/lbfmodel.yaml",   # optional 68-point fallback
     detection_mode="multiscale",       # 'haar' | 'multiscale' | 'yunet'
-    landmark_mode="auto",              # 'auto' | 'mediapipe' | 'lbf' | 'region'
+    landmark_mode="mediapipe",         # strict 478-point landmarks
     recognition_enabled=True,
 )
 
@@ -195,11 +195,9 @@ for i, face in enumerate(result.faces):
         print(f"  Yaw estimate  : {lm.yaw_estimate():+.1f}°")
         print(f"  Mouth open    : {lm.mouth_open_ratio():.2f}")
 
-        # Access specific landmark groups (68-point mode)
-        right_eye_pts = lm.groups["right_eye"]   # shape (6, 2)
+        # Access specific landmark groups
+        right_eye_pts = lm.groups["right_eye"]
         left_eye_pts  = lm.groups["left_eye"]
-        jaw_pts       = lm.groups["jaw"]          # shape (17, 2)
-        lip_pts       = lm.groups["outer_lips"]   # shape (12, 2)
         if lm.mode == "mediapipe_478":
             right_iris = lm.groups["right_iris"]  # shape (5, 2)
             left_iris  = lm.groups["left_iris"]   # shape (5, 2)
@@ -222,7 +220,11 @@ results = platform.analyze_batch(
 
 ---
 
-## Landmark Groups (68-point)
+## Landmark Groups
+
+The default `mediapipe` mode is strict: it requires `face_landmarker.task` and returns exactly 478 points per detected face. Detection, JSON export, overlays, and recognition analysis all carry the same `mediapipe_478` landmark result. Use `--landmark-mode auto`, `lbf`, or `region` only when you intentionally want a fallback backend.
+
+### LBF fallback groups (68-point)
 
 ```
 Points 0–16   → jaw line (17 pts)
@@ -244,7 +246,7 @@ Points 60–67  → inner lips (8 pts)
 face/
 ├── engine.py         ← FacePlatform — main entry point
 ├── detector.py       ← Multi-scale face detection (Haar + NMS)
-├── landmarks.py      ← LBF 68-pt + region-based landmark extraction
+├── landmarks.py      ← MediaPipe 478-pt + optional LBF/region landmark extraction
 ├── recognizer.py     ← LBPH + HOG fusion recognizer
 ├── image_loader.py   ← Universal image loader (all formats)
 ├── visualizer.py     ← Annotated image rendering

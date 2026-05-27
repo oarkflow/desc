@@ -6,9 +6,20 @@ import cv2
 from check_common import default_test_image, existing_path, print_json, require
 
 
+def default_liveness_image():
+    path = Path("/tmp/kyc_identity_selfie.jpg")
+    if path.exists():
+        return path
+    from PIL import Image
+    from skimage import data
+
+    Image.fromarray(data.astronaut()).save(path, format="JPEG")
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Check liveness frame/video processing and challenge state.")
-    parser.add_argument("--image", type=existing_path, default=default_test_image("citizenship.jpg"))
+    parser.add_argument("--image", type=existing_path, default=default_liveness_image())
     parser.add_argument("--video", type=existing_path)
     parser.add_argument("--challenge", action="append", default=["look_center"])
     parser.add_argument("--require-face", action=argparse.BooleanOptionalAction, default=True)
