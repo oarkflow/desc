@@ -1,19 +1,20 @@
 import os
 from pathlib import Path
-from shutil import move
+from urllib.request import urlretrieve
 
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
-
-from ultralytics import YOLO
 
 
 MODEL_DIR = Path("models")
 MODEL_NAME = "yolov8n.pt"
+MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 FACE_LANDMARKER_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/1/face_landmarker.task"
 )
 FACE_LANDMARKER_NAME = "face_landmarker.task"
+LBF_URL = "https://raw.githubusercontent.com/kurnianggoro/GSOC2017/master/data/lbfmodel.yaml"
+LBF_NAME = "lbfmodel.yaml"
 YUNET_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
     "face_detection_yunet_2023mar.onnx"
@@ -39,23 +40,17 @@ def main():
     target = MODEL_DIR / MODEL_NAME
 
     if not target.exists():
-        model = YOLO(MODEL_NAME)
-        source = Path(model.ckpt_path)
-        if source.resolve() != target.resolve():
-            move(str(source), target)
+        urlretrieve(MODEL_URL, target)
 
     print(f"YOLOv8n ready at {target}")
 
-    face_target = Path(FACE_LANDMARKER_NAME)
+    face_target = MODEL_DIR / FACE_LANDMARKER_NAME
     if not face_target.exists():
-        from urllib.request import urlretrieve
-
         urlretrieve(FACE_LANDMARKER_URL, face_target)
     print(f"MediaPipe face landmarker ready at {face_target}")
 
-    from urllib.request import urlretrieve
-
     for url, name in (
+        (LBF_URL, LBF_NAME),
         (YUNET_URL, YUNET_NAME),
         (SFACE_URL, SFACE_NAME),
         (AGE_PROTO_URL, AGE_PROTO_NAME),

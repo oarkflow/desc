@@ -1,7 +1,0 @@
-services:
-  ocr:
-    environment:
-      OCR_DEVICE: "${OCR_DEVICE:-gpu:0}"
-      OCR_USE_GPU: "true"
-      OCR_GPU_ID: "${OCR_GPU_ID:-0}"
-    gpus: all

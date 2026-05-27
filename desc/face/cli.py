@@ -38,8 +38,8 @@ from face.landmarks import MediaPipeLandmarkDetector, MP_LANDMARK_GROUPS
 from face.recognizer import SFaceSearcher
 from face.visualizer import save_image
 
-DEFAULT_LBF_MODEL = str(Path(__file__).parent.parent / "lbfmodel.yaml")
-DEFAULT_MEDIAPIPE_MODEL = str(Path(__file__).parent.parent / "face_landmarker.task")
+DEFAULT_LBF_MODEL = str(Path(__file__).parent.parent / "models" / "lbfmodel.yaml")
+DEFAULT_MEDIAPIPE_MODEL = str(Path(__file__).parent.parent / "models" / "face_landmarker.task")
 DEFAULT_YUNET_MODEL = str(Path(__file__).parent.parent / "models" / "face_detection_yunet_2023mar.onnx")
 DEFAULT_SFACE_MODEL = str(Path(__file__).parent.parent / "models" / "face_recognition_sface_2021dec.onnx")
 DEFAULT_AGE_MODEL = str(Path(__file__).parent.parent / "models" / "age_net.caffemodel")

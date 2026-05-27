@@ -44,10 +44,18 @@ services:
       OCR_DEVICE: "${OCR_DEVICE:-cpu}"
       OCR_GPU_ID: "${OCR_GPU_ID:-0}"
       OCR_USE_GPU: "${OCR_USE_GPU:-false}"
+      OCR_TAMPER_ENABLED: "${OCR_TAMPER_ENABLED:-true}"
+      OCR_TAMPER_MODE: "${OCR_TAMPER_MODE:-standard}"
+      OCR_MAX_PDF_PAGES: "${OCR_MAX_PDF_PAGES:-5}"
+      OCR_YOLO_MODEL_PATH: "${OCR_YOLO_MODEL_PATH:-}"
+      OCR_FACE_MODEL_PATH: "${OCR_FACE_MODEL_PATH:-}"
+      OCR_TAMPER_REVIEW_THRESHOLD: "${OCR_TAMPER_REVIEW_THRESHOLD:-0.35}"
+      OCR_TAMPER_REJECT_THRESHOLD: "${OCR_TAMPER_REJECT_THRESHOLD:-0.70}"
     volumes:
       - ocr-cache:/app/.ocr_cache
       - ./config:/app/config
       - ./data:/app/data
+      - ./models:/app/models:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]

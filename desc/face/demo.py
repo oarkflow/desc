@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from face_platform import FacePlatform, load_image
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-LBF_MODEL = str(Path(__file__).parent.parent / "lbfmodel.yaml")
+LBF_MODEL = str(Path(__file__).parent.parent / "models" / "lbfmodel.yaml")
 OUTPUT_DIR = Path(__file__).parent.parent / "face_platform" / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 

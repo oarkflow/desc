@@ -106,7 +106,7 @@ class FacePlatform:
     All-in-one face analysis platform.
 
     Usage:
-        platform = FacePlatform(lbf_model_path="lbfmodel.yaml")
+        platform = FacePlatform(lbf_model_path="models/lbfmodel.yaml")
         platform.enroll_from_folder("alice", "photos/alice/")
         result = platform.analyze("photo.jpg", save_annotated="output.jpg")
         result.print_summary()

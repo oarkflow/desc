@@ -2,3 +2,5 @@
 .idea
 .gocache
 .logs
+.ocr-venv
+*.db

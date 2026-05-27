@@ -48,7 +48,7 @@ setup:
 analyze: setup
 	cd $(ROOT_ABS) && $(PY) -m face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model face_landmarker.task \
+		--mediapipe-model models/face_landmarker.task \
 		analyze face/$(IMAGE) \
 		--output $(OUT) \
 		--json $(JSON) \
@@ -57,7 +57,7 @@ analyze: setup
 detect: setup
 	cd $(ROOT_ABS) && $(PY) -m face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model face_landmarker.task \
+		--mediapipe-model models/face_landmarker.task \
 		detect face/$(IMAGE) \
 		--overlay $(OVERLAY) \
 		--output $(OUT) \
@@ -66,7 +66,7 @@ detect: setup
 detect-all: setup
 	cd $(ROOT_ABS) && $(PY) -m face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model face_landmarker.task \
+		--mediapipe-model models/face_landmarker.task \
 		detect-all face/$(FOLDER) \
 		--output-dir $(POINTS_DIR) \
 		--overlay $(OVERLAY) \
@@ -75,7 +75,7 @@ detect-all: setup
 crop: setup
 	cd $(ROOT_ABS) && $(PY) -m face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model face_landmarker.task \
+		--mediapipe-model models/face_landmarker.task \
 		detect face/$(IMAGE) \
 		--overlay none \
 		--crop-dir $(CROP_DIR) \

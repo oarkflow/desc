@@ -9,6 +9,8 @@ python3 -m pip install -r requirements.txt
 python3 scripts/download_models.py
 ```
 
+All model artifacts are downloaded into `models/`, which is ignored by git except for a placeholder file.
+
 Or use Make:
 
 ```bash

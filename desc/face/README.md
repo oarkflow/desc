@@ -27,7 +27,7 @@ make -C face setup
 ### Analyze an image (detect + landmarks)
 ```bash
 python -m face.cli --landmark-mode mediapipe \
-    --mediapipe-model face_landmarker.task \
+    --mediapipe-model models/face_landmarker.task \
     analyze photo.jpg \
     --output annotated.jpg \
     --json result.json \
@@ -162,8 +162,8 @@ from face import FacePlatform
 
 # Initialize
 platform = FacePlatform(
-    mediapipe_model_path="face_landmarker.task",  # 478-point MediaPipe
-    lbf_model_path="lbfmodel.yaml",   # 68-point landmarks
+    mediapipe_model_path="models/face_landmarker.task",  # 478-point MediaPipe
+    lbf_model_path="models/lbfmodel.yaml",   # 68-point landmarks
     detection_mode="multiscale",       # 'haar' | 'multiscale' | 'yunet'
     landmark_mode="auto",              # 'auto' | 'mediapipe' | 'lbf' | 'region'
     recognition_enabled=True,

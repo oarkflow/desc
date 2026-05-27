@@ -13,7 +13,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OCR_LOG_LEVEL=info \
     OCR_DEVICE=cpu \
     OCR_GPU_ID=0 \
-    OCR_USE_GPU=false
+    OCR_USE_GPU=false \
+    OCR_TAMPER_ENABLED=true \
+    OCR_TAMPER_MODE=standard \
+    OCR_MAX_PDF_PAGES=5 \
+    OCR_TAMPER_REVIEW_THRESHOLD=0.35 \
+    OCR_TAMPER_REJECT_THRESHOLD=0.70
 
 WORKDIR /app
 
@@ -28,11 +33,12 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements-ocr.txt .
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt
+    && python -m pip install -r requirements-ocr.txt
 
 COPY ocr_service.py .
+COPY ocr ./ocr
 COPY config ./config
 COPY data ./data
 COPY docker-entrypoint.sh /usr/local/bin/ocr-service
