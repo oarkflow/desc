@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Demo & test script for face_platform.
+Demo & test script for kyc.face.
 Downloads a public domain face image and runs the full pipeline:
   - Face detection
   - 68-point landmark extraction
@@ -15,14 +15,17 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add repository root to path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from face_platform import FacePlatform, load_image
+try:
+    from kyc.face import FacePlatform, load_image
+except ModuleNotFoundError:
+    from face import FacePlatform, load_image
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 LBF_MODEL = str(Path(__file__).parent.parent / "models" / "lbfmodel.yaml")
-OUTPUT_DIR = Path(__file__).parent.parent / "face_platform" / "output"
+OUTPUT_DIR = Path(__file__).parent.parent / "face" / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 

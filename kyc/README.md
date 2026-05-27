@@ -261,6 +261,14 @@ Common gateway statuses:
 
 The gateway passes upstream OCR response headers, status codes, and bodies through for completed upstream requests.
 
+### `POST /describe`
+
+Runs the local image description pipeline in the Python OCR service. The implementation lives under `kyc/describe` and returns detected objects, a rule-based caption, optional Tesseract OCR text, tags, dimensions, and a lightweight tamper heuristic.
+
+### Face Analysis
+
+The face platform now lives under `kyc/face`. Use `python -m kyc.face.cli ...` from the repository root.
+
 ## Admin API
 
 All admin API routes are under `/admin/api` and require the same gateway API key when `GATEWAY_API_KEY` is configured.

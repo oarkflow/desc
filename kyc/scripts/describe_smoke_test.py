@@ -4,9 +4,12 @@ from pathlib import Path
 
 from ultralytics import ASSETS
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.main import describe_image, health
+try:
+    from kyc.describe.service import describe_image, health
+except ModuleNotFoundError:
+    from describe.service import describe_image, health
 
 
 class UploadStub:

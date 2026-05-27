@@ -21,13 +21,13 @@ A production-quality Python platform for **face detection**, **68-point landmark
 ## Quick Start
 
 ```bash
-make -C face setup
+make -C kyc/face setup
 ```
 
 ### Analyze an image (detect + landmarks)
 ```bash
-python -m face.cli --landmark-mode mediapipe \
-    --mediapipe-model models/face_landmarker.task \
+python -m kyc.face.cli --landmark-mode mediapipe \
+    --mediapipe-model kyc/models/face_landmarker.task \
     analyze photo.jpg \
     --output annotated.jpg \
     --json result.json \
@@ -37,7 +37,7 @@ python -m face.cli --landmark-mode mediapipe \
 With Make:
 
 ```bash
-make -C face analyze IMAGE=tests/obama1.jpg
+make -C kyc/face analyze IMAGE=tests/obama1.jpg
 ```
 
 ### Detect faces and crop them
@@ -45,18 +45,18 @@ make -C face analyze IMAGE=tests/obama1.jpg
 Draw square boxes:
 
 ```bash
-python -m face.cli --landmark-mode mediapipe detect face/tests/obama1.jpg \
+python -m kyc.face.cli --landmark-mode mediapipe detect kyc/face/tests/obama1.jpg \
     --overlay boxes \
     --output /tmp/obama_boxes.jpg \
     --json /tmp/obama_faces.json
 ```
 
-By default the CLI uses YuNet when `models/face_detection_yunet_2023mar.onnx` is available. That is much stricter than the Haar/multiscale fallback and avoids common false positives. To force another detector, pass `--detection-mode multiscale` or `--detection-mode haar`.
+By default the CLI uses YuNet when `kyc/models/face_detection_yunet_2023mar.onnx` is available. That is much stricter than the Haar/multiscale fallback and avoids common false positives. To force another detector, pass `--detection-mode multiscale` or `--detection-mode haar`.
 
 Draw landmark points and square boxes:
 
 ```bash
-python -m face.cli --landmark-mode mediapipe detect face/tests/obama1.jpg \
+python -m kyc.face.cli --landmark-mode mediapipe detect kyc/face/tests/obama1.jpg \
     --overlay both \
     --output /tmp/obama_points_boxes.jpg
 ```
@@ -64,7 +64,7 @@ python -m face.cli --landmark-mode mediapipe detect face/tests/obama1.jpg \
 Crop detected faces:
 
 ```bash
-python -m face.cli detect face/tests/obama1.jpg \
+python -m kyc.face.cli detect kyc/face/tests/obama1.jpg \
     --overlay none \
     --crop-dir /tmp/face_crops
 ```
@@ -72,8 +72,8 @@ python -m face.cli detect face/tests/obama1.jpg \
 With Make:
 
 ```bash
-make -C face detect IMAGE=tests/obama1.jpg OVERLAY=both
-make -C face crop IMAGE=tests/obama1.jpg CROP_DIR=/tmp/face_crops
+make -C kyc/face detect IMAGE=tests/obama1.jpg OVERLAY=both
+make -C kyc/face crop IMAGE=tests/obama1.jpg CROP_DIR=/tmp/face_crops
 ```
 
 ### Detect all images and store landmark points
@@ -81,7 +81,7 @@ make -C face crop IMAGE=tests/obama1.jpg CROP_DIR=/tmp/face_crops
 Process every image in a folder:
 
 ```bash
-python -m face.cli --landmark-mode mediapipe detect-all face/tests \
+python -m kyc.face.cli --landmark-mode mediapipe detect-all kyc/face/tests \
     --output-dir /tmp/face_points \
     --overlay both \
     --crop
@@ -100,19 +100,19 @@ Output layout:
 With Make:
 
 ```bash
-make -C face detect-all FOLDER=tests POINTS_DIR=/tmp/face_points OVERLAY=both
+make -C kyc/face detect-all FOLDER=tests POINTS_DIR=/tmp/face_points OVERLAY=both
 ```
 
 ### Search for a face in a folder
 
 ```bash
-make -C face search QUERY=tests/test-1.webp FOLDER=tests
+make -C kyc/face search QUERY=tests/test-1.webp FOLDER=tests
 ```
 
 Direct CLI:
 
 ```bash
-python -m face.cli search face/tests/test-1.webp face/tests \
+python -m kyc.face.cli search kyc/face/tests/test-1.webp kyc/face/tests \
     --overlay-dir /tmp/search_overlays \
     --crop-dir /tmp/search_crops \
     --verbose \
@@ -122,7 +122,7 @@ python -m face.cli search face/tests/test-1.webp face/tests \
 Search an explicit image list:
 
 ```bash
-python -m face.cli search face/tests/test-1.webp /path/to/images.txt
+python -m kyc.face.cli search kyc/face/tests/test-1.webp /path/to/images.txt
 ```
 
 Verbose mode explains each decision:
@@ -142,15 +142,15 @@ The SFace cosine score decides the identity match. Landmark differences are show
 ### Enroll a person and recognize them
 ```bash
 # Enroll from a folder of photos
-python -m face.cli enroll "Alice" photos/alice/ --db mydb
+python -m kyc.face.cli enroll "Alice" photos/alice/ --db mydb
 
 # Recognize in a new photo
-python -m face.cli recognize group_photo.jpg --db mydb --output out.jpg
+python -m kyc.face.cli recognize group_photo.jpg --db mydb --output out.jpg
 ```
 
 ### Batch-process a folder
 ```bash
-python -m face_platform.cli batch photos/ --output-dir results/
+python -m kyc.face.cli batch photos/ --output-dir results/
 ```
 
 ---
@@ -158,12 +158,12 @@ python -m face_platform.cli batch photos/ --output-dir results/
 ## Python API
 
 ```python
-from face import FacePlatform
+from kyc.face import FacePlatform
 
 # Initialize
 platform = FacePlatform(
-    mediapipe_model_path="models/face_landmarker.task",  # 478-point MediaPipe
-    lbf_model_path="models/lbfmodel.yaml",   # 68-point landmarks
+    mediapipe_model_path="kyc/models/face_landmarker.task",  # 478-point MediaPipe
+    lbf_model_path="kyc/models/lbfmodel.yaml",   # 68-point landmarks
     detection_mode="multiscale",       # 'haar' | 'multiscale' | 'yunet'
     landmark_mode="auto",              # 'auto' | 'mediapipe' | 'lbf' | 'region'
     recognition_enabled=True,

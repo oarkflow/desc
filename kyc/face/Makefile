@@ -1,8 +1,8 @@
 SHELL := /usr/bin/env bash
 
-ROOT := ..
+ROOT := ../..
 ROOT_ABS := $(abspath $(ROOT))
-VENV ?= $(ROOT_ABS)/.venv
+VENV ?= $(ROOT_ABS)/kyc/.venv
 PY := $(VENV)/bin/python
 PIP := $(PY) -m pip
 
@@ -37,68 +37,68 @@ help:
 	@echo "  make clean       Remove Python caches"
 
 install:
-	$(MAKE) -C $(ROOT_ABS) install
+	$(MAKE) -C $(ROOT_ABS)/kyc setup
 
 models:
-	$(MAKE) -C $(ROOT_ABS) models
+	$(MAKE) -C $(ROOT_ABS)/kyc models
 
 setup:
-	$(MAKE) -C $(ROOT_ABS) setup
+	$(MAKE) -C $(ROOT_ABS)/kyc setup
 
 analyze: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli \
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model models/face_landmarker.task \
-		analyze face/$(IMAGE) \
+		--mediapipe-model kyc/models/face_landmarker.task \
+		analyze kyc/face/$(IMAGE) \
 		--output $(OUT) \
 		--json $(JSON) \
 		--metrics
 
 detect: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli \
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model models/face_landmarker.task \
-		detect face/$(IMAGE) \
+		--mediapipe-model kyc/models/face_landmarker.task \
+		detect kyc/face/$(IMAGE) \
 		--overlay $(OVERLAY) \
 		--output $(OUT) \
 		--json $(JSON)
 
 detect-all: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli \
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model models/face_landmarker.task \
-		detect-all face/$(FOLDER) \
+		--mediapipe-model kyc/models/face_landmarker.task \
+		detect-all kyc/face/$(FOLDER) \
 		--output-dir $(POINTS_DIR) \
 		--overlay $(OVERLAY) \
 		--crop
 
 crop: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli \
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli \
 		--landmark-mode mediapipe \
-		--mediapipe-model models/face_landmarker.task \
-		detect face/$(IMAGE) \
+		--mediapipe-model kyc/models/face_landmarker.task \
+		detect kyc/face/$(IMAGE) \
 		--overlay none \
 		--crop-dir $(CROP_DIR) \
 		--json $(JSON)
 
 search: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli search face/$(QUERY) face/$(FOLDER) \
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli search kyc/face/$(QUERY) kyc/face/$(FOLDER) \
 		--overlay-dir $(OVERLAY_DIR) \
 		--crop-dir $(CROP_DIR) \
 		$(VERBOSE) \
 		--json $(JSON)
 
 enroll: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli enroll "$(LABEL)" face/$(IMAGE) --db $(DB)
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli enroll "$(LABEL)" kyc/face/$(IMAGE) --db $(DB)
 
 recognize: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli recognize face/$(IMAGE) --db $(DB) --json $(JSON) --output $(OUT)
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli recognize kyc/face/$(IMAGE) --db $(DB) --json $(JSON) --output $(OUT)
 
 batch: setup
-	cd $(ROOT_ABS) && $(PY) -m face.cli batch face/$(FOLDER) --output-dir /tmp/face_batch
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli batch kyc/face/$(FOLDER) --output-dir /tmp/face_batch
 
 test: setup
-	cd $(ROOT_ABS) && $(PY) -m pytest tests/test_face_recognition.py tests/test_mediapipe_landmarks.py -vv
+	cd $(ROOT_ABS) && $(PY) -m pytest kyc/tests/face -vv
 
 clean:
-	$(MAKE) -C $(ROOT_ABS) clean
+	$(MAKE) -C $(ROOT_ABS)/kyc clean

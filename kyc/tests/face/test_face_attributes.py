@@ -1,7 +1,7 @@
 import numpy as np
 
-from face.attributes import _age_result, _gender_result, estimate_face_attributes
-from face.detector import FaceDetection
+from kyc.face.attributes import _age_result, _gender_result, estimate_face_attributes
+from kyc.face.detector import FaceDetection
 
 
 def test_face_attributes_include_demographic_model_results():

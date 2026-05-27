@@ -5,7 +5,7 @@ from urllib.request import urlretrieve
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
 
 
-MODEL_DIR = Path("models")
+MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
 MODEL_NAME = "yolov8n.pt"
 MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 FACE_LANDMARKER_URL = (

@@ -30,17 +30,22 @@ RUN apt-get update \
         libjpeg62-turbo \
         libpng16-16 \
         libtiff6 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-ocr.txt .
+COPY requirements.txt .
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements-ocr.txt
+    && python -m pip install -r requirements.txt
 
 COPY ocr_service.py .
 COPY ocr ./ocr
+COPY describe ./describe
+COPY face ./face
 COPY config ./config
 COPY data ./data
+COPY scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/ocr-service
 
 RUN chmod +x /usr/local/bin/ocr-service \

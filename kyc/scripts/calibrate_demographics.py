@@ -7,18 +7,24 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from face.attributes import AGE_BUCKETS, GENDER_LABELS, DemographicEstimator
-from face.detector import FaceDetection, YuNetDetector
-from face.image_loader import load_image
+try:
+    from kyc.face.attributes import AGE_BUCKETS, GENDER_LABELS, DemographicEstimator
+    from kyc.face.detector import FaceDetection, YuNetDetector
+    from kyc.face.image_loader import load_image
+except ModuleNotFoundError:
+    from face.attributes import AGE_BUCKETS, GENDER_LABELS, DemographicEstimator
+    from face.detector import FaceDetection, YuNetDetector
+    from face.image_loader import load_image
 
 
-DEFAULT_YUNET_MODEL = "models/face_detection_yunet_2023mar.onnx"
-DEFAULT_AGE_MODEL = "models/age_net.caffemodel"
-DEFAULT_AGE_PROTO = "models/age_deploy.prototxt"
-DEFAULT_GENDER_MODEL = "models/gender_net.caffemodel"
-DEFAULT_GENDER_PROTO = "models/gender_deploy.prototxt"
+MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
+DEFAULT_YUNET_MODEL = str(MODEL_DIR / "face_detection_yunet_2023mar.onnx")
+DEFAULT_AGE_MODEL = str(MODEL_DIR / "age_net.caffemodel")
+DEFAULT_AGE_PROTO = str(MODEL_DIR / "age_deploy.prototxt")
+DEFAULT_GENDER_MODEL = str(MODEL_DIR / "gender_net.caffemodel")
+DEFAULT_GENDER_PROTO = str(MODEL_DIR / "gender_deploy.prototxt")
 
 
 def main():
@@ -26,7 +32,7 @@ def main():
         description="Calibrate age/gender confidence thresholds from a labeled validation CSV."
     )
     parser.add_argument("csv_path", help="CSV with image_path and optional age,gender,bbox columns")
-    parser.add_argument("--output", default="models/demographic_calibration.json")
+    parser.add_argument("--output", default=str(MODEL_DIR / "demographic_calibration.json"))
     parser.add_argument("--target-precision", type=float, default=0.90)
     parser.add_argument("--yunet-model", default=DEFAULT_YUNET_MODEL)
     parser.add_argument("--age-model", default=DEFAULT_AGE_MODEL)

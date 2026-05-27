@@ -1,9 +1,16 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from app.detector import ObjectDetector
-from app.captioner import CaptionGenerator
-from app.ocr import OCRReader
-from app.tamper import TamperAnalyzer
-from app.schemas import HealthResponse, ImageResponse
+try:
+    from kyc.describe.detector import ObjectDetector
+    from kyc.describe.captioner import CaptionGenerator
+    from kyc.describe.ocr import OCRReader
+    from kyc.describe.tamper import TamperAnalyzer
+    from kyc.describe.schemas import HealthResponse, ImageResponse
+except ModuleNotFoundError:
+    from describe.detector import ObjectDetector
+    from describe.captioner import CaptionGenerator
+    from describe.ocr import OCRReader
+    from describe.tamper import TamperAnalyzer
+    from describe.schemas import HealthResponse, ImageResponse
 import numpy as np
 import cv2
 

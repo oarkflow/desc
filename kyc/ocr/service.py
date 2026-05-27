@@ -36,6 +36,13 @@ from pydantic import BaseModel, Field
 from paddleocr import PaddleOCR
 import yaml
 
+try:
+    from kyc.describe.schemas import HealthResponse as DescribeHealthResponse
+    from kyc.describe.schemas import ImageResponse as DescribeImageResponse
+except ModuleNotFoundError:
+    from describe.schemas import HealthResponse as DescribeHealthResponse
+    from describe.schemas import ImageResponse as DescribeImageResponse
+
 
 # ----------------------------
 # Config
@@ -4609,6 +4616,36 @@ app = FastAPI(
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health", response_model=DescribeHealthResponse)
+async def describe_legacy_health() -> dict[str, Any]:
+    try:
+        from kyc.describe.service import health
+    except ModuleNotFoundError:
+        from describe.service import health
+
+    return await health()
+
+
+@app.get("/describe/health", response_model=DescribeHealthResponse)
+async def describe_health() -> dict[str, Any]:
+    try:
+        from kyc.describe.service import health
+    except ModuleNotFoundError:
+        from describe.service import health
+
+    return await health()
+
+
+@app.post("/describe", response_model=DescribeImageResponse)
+async def describe_endpoint(file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        from kyc.describe.service import describe_image
+    except ModuleNotFoundError:
+        from describe.service import describe_image
+
+    return await describe_image(file)
 
 
 @app.post("/admin/reload")

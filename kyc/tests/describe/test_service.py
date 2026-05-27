@@ -5,9 +5,9 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image, ImageDraw
 
-from app.captioner import CaptionGenerator
-from app.main import describe_image
-from app.ocr import OCRReader
+from kyc.describe.captioner import CaptionGenerator
+from kyc.describe.service import describe_image
+from kyc.describe.ocr import OCRReader
 
 
 def make_image(fmt):
@@ -64,10 +64,10 @@ def test_describe_accepts_common_image_extensions(monkeypatch):
     def fake_detect(image):
         return [{"label": "person", "confidence": 0.9, "box": [10.0, 20.0, 80.0, 180.0]}]
 
-    monkeypatch.setattr("app.main.detector.detect", fake_detect)
-    monkeypatch.setattr("app.main.ocr.read", lambda image: "")
+    monkeypatch.setattr("kyc.describe.service.detector.detect", fake_detect)
+    monkeypatch.setattr("kyc.describe.service.ocr.read", lambda image: "")
     monkeypatch.setattr(
-        "app.main.tamper_analyzer.analyze",
+        "kyc.describe.service.tamper_analyzer.analyze",
         lambda image, image_bytes: {"verdict": "no_obvious_tampering", "score": 0.1, "signals": [], "note": ""},
     )
 

@@ -3,22 +3,22 @@
 face CLI — Face Recognition & Landmark Extraction
 Usage examples:
   # Analyze a single image (detection + landmarks)
-  python -m face.cli analyze photo.jpg --output out.jpg
+  python -m kyc.face.cli analyze photo.jpg --output out.jpg
 
   # Analyze with landmark metrics overlay
-  python -m face.cli analyze photo.jpg --output out.jpg --metrics
+  python -m kyc.face.cli analyze photo.jpg --output out.jpg --metrics
 
   # Enroll a person from a folder of images
-  python -m face.cli enroll Alice photos/alice/ --db mydb
+  python -m kyc.face.cli enroll Alice photos/alice/ --db mydb
 
   # Recognize faces in a photo against enrolled database
-  python -m face.cli recognize photo.jpg --db mydb --output out.jpg
+  python -m kyc.face.cli recognize photo.jpg --db mydb --output out.jpg
 
   # Batch analyze all images in a folder
-  python -m face.cli batch photos/ --output-dir results/
+  python -m kyc.face.cli batch photos/ --output-dir results/
 
   # Export results as JSON
-  python -m face.cli analyze photo.jpg --json result.json
+  python -m kyc.face.cli analyze photo.jpg --json result.json
 """
 
 import argparse
@@ -30,13 +30,20 @@ from collections import defaultdict
 from pathlib import Path
 
 # Allow running as script from any directory
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from face import FacePlatform
-from face.image_loader import load_image
-from face.landmarks import MediaPipeLandmarkDetector, MP_LANDMARK_GROUPS
-from face.recognizer import SFaceSearcher
-from face.visualizer import save_image
+try:
+    from kyc.face import FacePlatform
+    from kyc.face.image_loader import load_image
+    from kyc.face.landmarks import MediaPipeLandmarkDetector, MP_LANDMARK_GROUPS
+    from kyc.face.recognizer import SFaceSearcher
+    from kyc.face.visualizer import save_image
+except ModuleNotFoundError:
+    from face import FacePlatform
+    from face.image_loader import load_image
+    from face.landmarks import MediaPipeLandmarkDetector, MP_LANDMARK_GROUPS
+    from face.recognizer import SFaceSearcher
+    from face.visualizer import save_image
 
 DEFAULT_LBF_MODEL = str(Path(__file__).parent.parent / "models" / "lbfmodel.yaml")
 DEFAULT_MEDIAPIPE_MODEL = str(Path(__file__).parent.parent / "models" / "face_landmarker.task")
@@ -486,7 +493,10 @@ def cmd_batch(args):
 
 
 def cmd_info(args):
-    from face.image_loader import image_info
+    try:
+        from kyc.face.image_loader import image_info
+    except ModuleNotFoundError:
+        from face.image_loader import image_info
     img = load_image(args.image)
     info = image_info(img)
     print(f"\nImage: {args.image}")

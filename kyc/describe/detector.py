@@ -5,7 +5,8 @@ from pathlib import Path
 os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/Ultralytics")
 
 class ObjectDetector:
-    def __init__(self, model_path: str = "models/yolov8n.pt", confidence: float = 0.25):
+    def __init__(self, model_path: str | None = None, confidence: float = 0.25):
+        model_path = model_path or str(Path(__file__).resolve().parents[1] / "models" / "yolov8n.pt")
         self.model_path = Path(model_path)
         self.confidence = confidence
         # Lightweight CPU-friendly model. Ultralytics will download it once if

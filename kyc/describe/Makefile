@@ -1,7 +1,9 @@
 SHELL := /usr/bin/env bash
 
 PYTHON ?= python3
-VENV ?= .venv
+ROOT := ../..
+ROOT_ABS := $(abspath $(ROOT))
+VENV ?= $(ROOT_ABS)/kyc/.venv
 BIN := $(VENV)/bin
 PY := $(BIN)/python
 PIP := $(PY) -m pip
@@ -9,7 +11,7 @@ UVICORN := $(BIN)/uvicorn
 
 HOST ?= 127.0.0.1
 PORT ?= 8010
-IMAGE ?= testdata/Airbrush-OBJECT-REMOVER-1774003408083.jpg
+IMAGE ?= kyc/testdata/citizenship.jpg
 
 .PHONY: help venv install models setup run test smoke describe clean ocr-deps face-search
 
@@ -23,37 +25,37 @@ help:
 	@echo "  make test         Run pytest"
 	@echo "  make smoke        Run local smoke test"
 	@echo "  make ocr-deps     Install Tesseract English/Nepali OCR packages"
-	@echo "  make face-search  Search face/tests for face/tests/test-1.webp"
+	@echo "  make face-search  Search kyc/face/tests for kyc/face/tests/test-1.webp"
 	@echo "  make clean        Remove Python caches"
 
 venv:
 	@test -x "$(PY)" || $(PYTHON) -m venv $(VENV)
 
 install: venv
-	$(PIP) install -r requirements.txt
+	$(PIP) install -r $(ROOT_ABS)/kyc/requirements.txt
 
 models: install
-	$(PY) scripts/download_models.py
+	$(PY) $(ROOT_ABS)/kyc/scripts/download_models.py
 
 setup: install models
 
 run: setup
-	$(UVICORN) app.main:app --host $(HOST) --port $(PORT)
+	cd $(ROOT_ABS) && $(UVICORN) kyc.describe.service:app --host $(HOST) --port $(PORT)
 
 describe:
 	curl -sS -X POST "http://$(HOST):$(PORT)/describe" -F "file=@$(IMAGE)"
 
 test: setup
-	$(PY) -m pytest -vv
+	cd $(ROOT_ABS) && $(PY) -m pytest kyc/tests/describe -vv
 
 smoke: setup
-	$(PY) scripts/smoke_test.py
+	cd $(ROOT_ABS) && $(PY) kyc/scripts/describe_smoke_test.py
 
 ocr-deps:
 	sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-nep
 
 face-search: setup
-	$(PY) -m face.cli search face/tests/test-1.webp face/tests
+	cd $(ROOT_ABS) && $(PY) -m kyc.face.cli search kyc/face/tests/test-1.webp kyc/face/tests
 
 clean:
-	rm -rf .pytest_cache app/__pycache__ face/__pycache__ tests/__pycache__ scripts/__pycache__
+	rm -rf .pytest_cache __pycache__ kyc/describe/__pycache__

@@ -1,8 +1,8 @@
 import numpy as np
 
-from face.landmarks import LandmarkResult
-from face.visualizer import draw_faces
-from face.detector import FaceDetection
+from kyc.face.landmarks import LandmarkResult
+from kyc.face.visualizer import draw_faces
+from kyc.face.detector import FaceDetection
 
 
 def test_478_point_landmark_result_preserves_prebuilt_groups():

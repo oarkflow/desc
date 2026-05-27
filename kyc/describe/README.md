@@ -5,11 +5,11 @@ Self-hosted FastAPI service for lightweight image descriptions. It uses YOLOv8n 
 ## Setup
 
 ```bash
-python3 -m pip install -r requirements.txt
-python3 scripts/download_models.py
+python3 -m pip install -r kyc/requirements.txt
+python3 kyc/scripts/download_models.py
 ```
 
-All model artifacts are downloaded into `models/`, which is ignored by git except for a placeholder file.
+All model artifacts are downloaded into `kyc/models/`, which is ignored by git except for a placeholder file.
 
 Or use Make:
 
@@ -17,7 +17,7 @@ Or use Make:
 make setup
 ```
 
-`requirements.txt` pins CPU-only PyTorch wheels to avoid pulling GPU/CUDA packages.
+KYC requirements include the image description runtime dependencies.
 
 For OCR, install the Tesseract binary and language packs through your OS package manager:
 
@@ -30,7 +30,7 @@ The service still works without OCR and returns an empty `text` field.
 ## Run
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn kyc.describe.service:app --host 0.0.0.0 --port 8000
 ```
 
 With Make:
@@ -68,5 +68,5 @@ make face-search
 Or from the face folder:
 
 ```bash
-make -C face search QUERY=tests/test-1.webp FOLDER=tests
+make -C kyc/face search QUERY=tests/test-1.webp FOLDER=tests
 ```

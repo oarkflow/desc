@@ -167,6 +167,25 @@ class OCREndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 413)
 
+    def test_describe_endpoint_is_available_on_ocr_app(self):
+        with mock.patch("kyc.describe.service.detector.detect", return_value=[]):
+            with mock.patch("kyc.describe.service.ocr.read", return_value="SALE 50 TEST"):
+                with mock.patch(
+                    "kyc.describe.service.tamper_analyzer.analyze",
+                    return_value={"verdict": "no_obvious_tampering", "score": 0.0, "signals": [], "note": ""},
+                ):
+                    response = self.client.post(
+                        "/describe",
+                        files={"file": ("sample.png", image_bytes(), "image/png")},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["text"], "SALE 50 TEST")
+        self.assertEqual(payload["tags"], ["text"])
+        self.assertEqual(payload["tamper"]["verdict"], "no_obvious_tampering")
+        self.assertEqual(self.client.get("/describe/health").status_code, 200)
+
     def test_pdf_upload_processes_pages_and_aggregates_tamper(self):
         pages = [
             {

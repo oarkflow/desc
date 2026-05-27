@@ -2,7 +2,8 @@
 .cache/
 __pycache__/
 *.py[cod]
-models/*.task
+models/*
+!models/.gitkeep
 models/tessdata/
 evidence/
 kyc.db

@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-from face.recognizer import FusionRecognizer, SFaceSearcher
-from face.engine import FacePlatform
+from kyc.face.recognizer import FusionRecognizer, SFaceSearcher
+from kyc.face.engine import FacePlatform
 
 
 def make_face(seed: int) -> np.ndarray:
@@ -35,10 +35,10 @@ def test_fusion_recognizer_identifies_enrolled_face():
 
 
 def test_sface_search_finds_matching_obama_images_when_fixtures_exist():
-    query = Path("face/tests/test-1.webp")
-    folder = Path("face/tests")
-    yunet = Path("models/face_detection_yunet_2023mar.onnx")
-    sface = Path("models/face_recognition_sface_2021dec.onnx")
+    query = Path("kyc/face/tests/test-1.webp")
+    folder = Path("kyc/face/tests")
+    yunet = Path("kyc/models/face_detection_yunet_2023mar.onnx")
+    sface = Path("kyc/models/face_recognition_sface_2021dec.onnx")
     required = [
         query,
         folder / "obama1.jpg",
@@ -64,8 +64,8 @@ def test_sface_search_finds_matching_obama_images_when_fixtures_exist():
 
 
 def test_yunet_detects_single_obama_face_when_fixture_exists():
-    image = Path("face/tests/obama1.jpg")
-    yunet = Path("models/face_detection_yunet_2023mar.onnx")
+    image = Path("kyc/face/tests/obama1.jpg")
+    yunet = Path("kyc/models/face_detection_yunet_2023mar.onnx")
     if not image.exists() or not yunet.exists():
         return
 
