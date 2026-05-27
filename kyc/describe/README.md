@@ -30,7 +30,7 @@ The service still works without OCR and returns an empty `text` field.
 ## Run
 
 ```bash
-uvicorn kyc.describe.service:app --host 0.0.0.0 --port 8000
+python -m kyc.ocr_service --serve --port 8000
 ```
 
 With Make:

@@ -4612,6 +4612,14 @@ app = FastAPI(
     lifespan=app_lifespan,
 )
 
+try:
+    from kyc.index import add_kyc_routes
+except ModuleNotFoundError:
+    add_kyc_routes = None
+
+if add_kyc_routes is not None:
+    add_kyc_routes(app)
+
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:

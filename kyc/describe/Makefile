@@ -40,7 +40,7 @@ models: install
 setup: install models
 
 run: setup
-	cd $(ROOT_ABS) && $(UVICORN) kyc.describe.service:app --host $(HOST) --port $(PORT)
+	cd $(ROOT_ABS) && $(PY) -m kyc.ocr_service --serve --host $(HOST) --port $(PORT)
 
 describe:
 	curl -sS -X POST "http://$(HOST):$(PORT)/describe" -F "file=@$(IMAGE)"

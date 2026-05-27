@@ -21,7 +21,7 @@ models:
 
 run: setup
 	mkdir -p "$(MPLCONFIGDIR)"
-	cd "$(ROOT)" && $(APP_ENV) PORT="$(PORT)" kyc/$(PYTHON) -m kyc.index
+	cd "$(ROOT)" && $(APP_ENV) OCR_PORT="$(PORT)" kyc/$(PYTHON) -m kyc.ocr_service --serve --port "$(PORT)"
 
 check: setup
 	mkdir -p "$(MPLCONFIGDIR)"

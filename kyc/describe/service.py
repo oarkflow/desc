@@ -1,20 +1,16 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import HTTPException, UploadFile
 try:
     from kyc.describe.detector import ObjectDetector
     from kyc.describe.captioner import CaptionGenerator
     from kyc.describe.ocr import OCRReader
     from kyc.describe.tamper import TamperAnalyzer
-    from kyc.describe.schemas import HealthResponse, ImageResponse
 except ModuleNotFoundError:
     from describe.detector import ObjectDetector
     from describe.captioner import CaptionGenerator
     from describe.ocr import OCRReader
     from describe.tamper import TamperAnalyzer
-    from describe.schemas import HealthResponse, ImageResponse
 import numpy as np
 import cv2
-
-app = FastAPI(title="Local Image Description Service")
 
 detector = ObjectDetector()
 captioner = CaptionGenerator()
@@ -30,7 +26,6 @@ def read_image(file_bytes: bytes):
     return img
 
 
-@app.get("/health", response_model=HealthResponse)
 async def health():
     return {
         "status": "ok",
@@ -41,8 +36,7 @@ async def health():
     }
 
 
-@app.post("/describe", response_model=ImageResponse)
-async def describe_image(file: UploadFile = File(...)):
+async def describe_image(file: UploadFile):
     if file.content_type and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Upload must use an image content type.")
 

@@ -2,9 +2,12 @@
 .gitignore
 .dockerignore
 .venv
+.ocr-venv
+.cache
 __pycache__
 *.py[cod]
 .ocr_cache
 debug_ocr
 testdata
+models
 .DS_Store

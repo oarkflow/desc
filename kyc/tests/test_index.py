@@ -1,10 +1,16 @@
 import json
 import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import kyc.index as index
+import kyc.ocr.service as service
 
 
 class FakeOCRGateway:
@@ -54,12 +60,11 @@ class ApplicantFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        index.app.config.update(TESTING=True, SECRET_KEY="test")
         index.repo = index.KYCRepository(str(self.root / "kyc.db"))
         index.storage = index.LocalEvidenceStorage(str(self.root / "evidence"))
         index.ocr_gateway = FakeOCRGateway()
         index.face_match_service = FakeFaceMatchService(index.repo)
-        self.client = index.app.test_client()
+        self.client = TestClient(service.app)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -71,12 +76,12 @@ class ApplicantFlowTests(unittest.TestCase):
 
         follow = self.client.get(response.headers["Location"])
         self.assertEqual(follow.status_code, 200)
-        self.assertIn("KYC Verification", follow.get_data(as_text=True))
+        self.assertIn("KYC Verification", follow.text)
 
     def test_create_session_does_not_require_tenant_api_key(self):
         response = self.client.post("/api/kyc/sessions")
         self.assertEqual(response.status_code, 201)
-        data = response.get_json()
+        data = response.json()
         self.assertIn("/kyc/", data["applicant_url"])
         self.assertEqual(data["verification"]["session"]["id"], data["session_id"])
 
@@ -88,13 +93,12 @@ class ApplicantFlowTests(unittest.TestCase):
             data={
                 "document_type": "national_id",
                 "side": "front",
-                "file": (io.BytesIO(b"image-bytes"), "front.jpg"),
             },
-            content_type="multipart/form-data",
+            files={"file": ("front.jpg", io.BytesIO(b"image-bytes"), "image/jpeg")},
         )
 
         self.assertEqual(response.status_code, 200)
-        data = response.get_json()
+        data = response.json()
         verification = data["verification"]
         self.assertEqual(verification["face_embeddings"][0]["source_type"], "document")
         self.assertEqual(data["gateway"]["document_type_resolution"]["resolved_document_type"], "national_id")

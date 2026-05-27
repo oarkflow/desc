@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PADDLE_PDX_CACHE_HOME=/app/.ocr_cache/paddlex \
     MPLCONFIGDIR=/app/.ocr_cache/matplotlib \
     TESSDATA_PREFIX=/app/.ocr_cache/tessdata \
+    PYTHONPATH=/app \
     OCR_HOST=0.0.0.0 \
     OCR_PORT=8000 \
     OCR_WORKERS=1 \
@@ -39,13 +40,7 @@ COPY requirements.txt .
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt
 
-COPY ocr_service.py .
-COPY ocr ./ocr
-COPY describe ./describe
-COPY face ./face
-COPY config ./config
-COPY data ./data
-COPY scripts ./scripts
+COPY . ./kyc
 COPY docker-entrypoint.sh /usr/local/bin/ocr-service
 
 RUN chmod +x /usr/local/bin/ocr-service \

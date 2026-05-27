@@ -1,7 +1,13 @@
 import json
 import os
+from pathlib import Path
+from typing import Any
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.datastructures import FormData, UploadFile as StarletteUploadFile
 
 from kyc.kyc import (
     DOCUMENT_TYPES,
@@ -14,8 +20,8 @@ from kyc.kyc import (
     decode_data_url,
 )
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-kyc-secret-change-me")
+
+templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 repo = KYCRepository(os.environ.get("KYC_DB", "kyc.db"))
 storage = LocalEvidenceStorage(os.environ.get("EVIDENCE_DIR", "evidence"))
@@ -25,26 +31,40 @@ face_match_service = FaceMatchService(repo)
 liveness_service = LivenessService()
 
 
-def json_error(message, status=400):
-    return jsonify({"error": message}), status
+def json_error(message: str, status: int = 400) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=status)
 
 
-def applicant_session(session_id):
-    token = request.headers.get("X-Session-Token") or request.args.get("token") or session.get("applicant_session_token")
+def applicant_session(request: Request, session_id: str):
+    token = (
+        request.headers.get("X-Session-Token")
+        or request.query_params.get("token")
+        or request.session.get("applicant_session_token")
+    )
     return repo.verify_session_token(session_id, token)
 
 
-def uploaded_bytes(name="file"):
-    if name in request.files:
-        upload = request.files[name]
-        return upload.read(), upload.filename, upload.content_type
-    payload = request.get_json(silent=True) or {}
+async def uploaded_bytes(request: Request, form: FormData | None = None, name: str = "file"):
+    form = form if form is not None else await request.form()
+    upload = form.get(name)
+    if isinstance(upload, StarletteUploadFile):
+        return await upload.read(), upload.filename, upload.content_type
+
+    payload: dict[str, Any] = {}
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        payload = await request.json()
     data_url = payload.get("data_url") or payload.get("frame")
     if data_url:
-        return decode_data_url(data_url), payload.get("filename", "capture.jpg"), payload.get("content_type", "image/jpeg")
-    raw = request.get_data()
+        return (
+            decode_data_url(data_url),
+            payload.get("filename", "capture.jpg"),
+            payload.get("content_type", "image/jpeg"),
+        )
+
+    raw = await request.body()
     if raw:
-        return raw, request.headers.get("X-Filename", "upload.bin"), request.content_type
+        return raw, request.headers.get("X-Filename", "upload.bin"), request.headers.get("content-type")
     raise ValueError("No upload provided")
 
 
@@ -79,74 +99,86 @@ def verification_summary(verification):
     return safe
 
 
-@app.route("/")
-def index():
-    session_token = session.get("applicant_session_token")
+async def index(request: Request):
+    session_token = request.session.get("applicant_session_token")
     if session_token and repo.get_session_by_token(session_token):
-        return redirect(url_for("applicant_kyc", session_token=session_token))
+        return RedirectResponse(str(request.url_for("applicant_kyc", session_token=session_token)), status_code=302)
     created = repo.create_demo_session()
-    session["applicant_session_token"] = created["session_token"]
-    return redirect(url_for("applicant_kyc", session_token=created["session_token"]))
+    request.session["applicant_session_token"] = created["session_token"]
+    return RedirectResponse(str(request.url_for("applicant_kyc", session_token=created["session_token"])), status_code=302)
 
 
-@app.route("/kyc/<session_token>")
-def applicant_kyc(session_token):
+async def applicant_kyc(request: Request, session_token: str):
+    kyc_session = repo.get_session_by_token(session_token)
+    if not kyc_session:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    request.session["applicant_session_token"] = session_token
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "document_types": DOCUMENT_TYPES,
+            "session_id": kyc_session["id"],
+            "session_token": session_token,
+        },
+    )
+
+
+async def document_types():
+    return DOCUMENT_TYPES
+
+
+async def create_kyc_session(request: Request):
+    created = repo.create_demo_session()
+    request.session["applicant_session_token"] = created["session_token"]
+    applicant_url = str(request.url_for("applicant_kyc", session_token=created["session_token"]))
+    return JSONResponse(
+        {
+            "session_id": created["id"],
+            "session_token": created["session_token"],
+            "applicant_url": applicant_url,
+            "verification": verification_summary(repo.get_case(created["id"])),
+        },
+        status_code=201,
+    )
+
+
+async def create_demo_kyc_session(request: Request):
+    created = repo.create_demo_session()
+    return {
+        "session_id": created["id"],
+        "session_token": created["session_token"],
+        "applicant_url": str(request.url_for("applicant_kyc", session_token=created["session_token"])),
+        "verification": verification_summary(repo.get_case(created["id"])),
+    }
+
+
+async def get_kyc_session(request: Request, session_id: str):
     try:
-        kyc_session = repo.get_session_by_token(session_token)
-        if not kyc_session:
-            abort(404)
-        session["applicant_session_token"] = session_token
-        return render_template("index.html", document_types=DOCUMENT_TYPES, session_id=kyc_session["id"], session_token=session_token)
-    except ValueError:
-        abort(404)
-
-
-@app.route("/api/document-types")
-def document_types():
-    return jsonify(DOCUMENT_TYPES)
-
-
-@app.route("/api/kyc/sessions", methods=["POST"])
-def create_kyc_session():
-    created = repo.create_demo_session()
-    session["applicant_session_token"] = created["session_token"]
-    applicant_url = url_for("applicant_kyc", session_token=created["session_token"], _external=True)
-    return jsonify({"session_id": created["id"], "session_token": created["session_token"], "applicant_url": applicant_url, "verification": verification_summary(repo.get_case(created["id"]))}), 201
-
-
-@app.route("/api/kyc/demo-session", methods=["POST"])
-def create_demo_kyc_session():
-    created = repo.create_demo_session()
-    return jsonify({"session_id": created["id"], "session_token": created["session_token"], "applicant_url": url_for("applicant_kyc", session_token=created["session_token"], _external=True), "verification": verification_summary(repo.get_case(created["id"]))})
-
-
-@app.route("/api/kyc/sessions/<session_id>")
-def get_kyc_session(session_id):
-    try:
-        applicant_session(session_id)
-        return jsonify(verification_summary(repo.get_case(session_id)))
+        applicant_session(request, session_id)
+        return verification_summary(repo.get_case(session_id))
     except ValueError as error:
         return json_error(str(error), 404)
 
 
-@app.route("/api/kyc/sessions/<session_id>/profile", methods=["POST"])
-def save_profile(session_id):
+async def save_profile(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
-        data = request.get_json(silent=True) or request.form.to_dict()
+        applicant_session(request, session_id)
+        content_type = request.headers.get("content-type", "")
+        data = await request.json() if content_type.startswith("application/json") else dict(await request.form())
         repo.save_profile(session_id, data)
-        return jsonify(verification_summary(repo.get_case(session_id)))
+        return verification_summary(repo.get_case(session_id))
     except ValueError as error:
         return json_error(str(error))
 
 
-@app.route("/api/kyc/sessions/<session_id>/documents", methods=["POST"])
-def upload_document(session_id):
+async def upload_document(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
-        data, filename, content_type = uploaded_bytes()
-        selected_document_type = request.form.get("document_type") or request.args.get("document_type")
-        side = request.form.get("side") or request.args.get("side", "front")
+        applicant_session(request, session_id)
+        form = await request.form()
+        data, filename, content_type = await uploaded_bytes(request, form)
+        selected_document_type = form.get("document_type") or request.query_params.get("document_type")
+        side = form.get("side") or request.query_params.get("side", "front")
         file_info = storage.save_bytes(session_id, "documents", filename, data)
         try:
             gateway_result = ocr_gateway.extract(
@@ -176,59 +208,55 @@ def upload_document(session_id):
         repo.add_document(session_id, document_type, side, file_info, content_type, gateway_result)
         face_match_service.enroll_source(session_id, "document", file_info["path"], source_id=side)
         objects, object_summary = gateway_object_detection(gateway_result)
-        return jsonify({
+        return {
             "document": file_info,
             "gateway": gateway_result,
             "objects": objects,
             "object_summary": object_summary,
             "suggested_profile": suggested_profile,
             "verification": verification_summary(repo.get_case(session_id)),
-        })
+        }
     except ValueError as error:
         return json_error(str(error))
 
 
-@app.route("/api/kyc/sessions/<session_id>/selfie", methods=["POST"])
-def upload_selfie(session_id):
+async def upload_selfie(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
-        data, filename, content_type = uploaded_bytes()
+        applicant_session(request, session_id)
+        data, filename, content_type = await uploaded_bytes(request)
         file_info = storage.save_bytes(session_id, "selfies", filename, data)
         repo.add_selfie(session_id, file_info, content_type)
         face_match_service.enroll_source(session_id, "selfie", file_info["path"])
-        return jsonify({"selfie": file_info, "verification": verification_summary(repo.get_case(session_id))})
+        return {"selfie": file_info, "verification": verification_summary(repo.get_case(session_id))}
     except ValueError as error:
         return json_error(str(error))
 
 
-@app.route("/api/kyc/sessions/<session_id>/challenge")
-def get_challenge(session_id):
+async def get_challenge(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
+        applicant_session(request, session_id)
         verification = repo.get_case(session_id)
-        return jsonify({"challenge": json.loads(verification["session"]["challenge_json"])})
+        return {"challenge": json.loads(verification["session"]["challenge_json"])}
     except ValueError as error:
         return json_error(str(error), 404)
 
 
-@app.route("/api/kyc/sessions/<session_id>/liveness/frame", methods=["POST"])
-def process_liveness_frame(session_id):
+async def process_liveness_frame(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
-        data, _, _ = uploaded_bytes()
+        applicant_session(request, session_id)
+        data, _, _ = await uploaded_bytes(request)
         verification = repo.get_case(session_id)
         challenge = json.loads(verification["session"]["challenge_json"])
         result = liveness_service.analyze_frame_bytes(data, session_id=session_id, challenge=challenge)
         repo.audit(session_id, "liveness_frame_processed", result)
-        return jsonify(result)
+        return result
     except ValueError as error:
         return json_error(str(error))
 
 
-@app.route("/api/kyc/sessions/<session_id>/liveness/complete", methods=["POST"])
-def complete_liveness(session_id):
+async def complete_liveness(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
+        applicant_session(request, session_id)
         verification = repo.get_case(session_id)
         challenge = json.loads(verification["session"]["challenge_json"])
         result = liveness_service.finalize_session(session_id, challenge)
@@ -244,27 +272,49 @@ def complete_liveness(session_id):
             result = merged
         else:
             repo.add_liveness(session_id, {}, result)
-        return jsonify({"liveness": result, "verification": verification_summary(repo.get_case(session_id))})
+        return {"liveness": result, "verification": verification_summary(repo.get_case(session_id))}
     except ValueError as error:
         return json_error(str(error))
 
 
-@app.route("/api/kyc/sessions/<session_id>/liveness/video", methods=["POST"])
-def upload_liveness_video(session_id):
+async def upload_liveness_video(request: Request, session_id: str):
     try:
-        applicant_session(session_id)
-        data, filename, content_type = uploaded_bytes()
+        applicant_session(request, session_id)
+        data, filename, content_type = await uploaded_bytes(request)
         file_info = storage.save_bytes(session_id, "liveness", filename or "liveness.webm", data)
         verification = repo.get_case(session_id)
         challenge = json.loads(verification["session"]["challenge_json"])
         result = liveness_service.analyze_video_file(file_info["path"], challenge)
         result["content_type"] = content_type
         repo.add_liveness(session_id, file_info, result)
-        return jsonify({"liveness": result, "verification": verification_summary(repo.get_case(session_id))})
+        return {"liveness": result, "verification": verification_summary(repo.get_case(session_id))}
     except ValueError as error:
         return json_error(str(error))
 
 
+def add_kyc_routes(target: FastAPI) -> None:
+    if getattr(target.state, "kyc_routes_added", False):
+        return
+    target.state.kyc_routes_added = True
+    target.add_middleware(SessionMiddleware, secret_key=os.environ.get("SECRET_KEY", "dev-kyc-secret-change-me"))
+    target.add_api_route("/", index, methods=["GET"], name="index")
+    target.add_api_route("/kyc/{session_token}", applicant_kyc, methods=["GET"], name="applicant_kyc", response_class=HTMLResponse)
+    target.add_api_route("/api/document-types", document_types, methods=["GET"])
+    target.add_api_route("/api/kyc/sessions", create_kyc_session, methods=["POST"])
+    target.add_api_route("/api/kyc/demo-session", create_demo_kyc_session, methods=["POST"])
+    target.add_api_route("/api/kyc/sessions/{session_id}", get_kyc_session, methods=["GET"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/profile", save_profile, methods=["POST"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/documents", upload_document, methods=["POST"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/selfie", upload_selfie, methods=["POST"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/challenge", get_challenge, methods=["GET"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/liveness/frame", process_liveness_frame, methods=["POST"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/liveness/complete", complete_liveness, methods=["POST"])
+    target.add_api_route("/api/kyc/sessions/{session_id}/liveness/video", upload_liveness_video, methods=["POST"])
+
+
 if __name__ == "__main__":
+    import uvicorn
+    from kyc.ocr.service import app
+
     print("Starting KYC verification server...")
-    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5555)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5555)))
