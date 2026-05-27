@@ -1,11 +1,26 @@
 import cv2
-import mediapipe as mp
 import numpy as np
 import requests
 import tempfile
 import os
 from pathlib import Path
 from scipy.spatial import distance as dist
+
+try:  # pragma: no cover - import path differs between package and script use
+    from kyc.quiet import configure_quiet_ml_runtime, quiet_models_enabled, suppress_native_output
+except ModuleNotFoundError:  # pragma: no cover
+    from quiet import configure_quiet_ml_runtime, quiet_models_enabled, suppress_native_output
+
+configure_quiet_ml_runtime()
+
+with suppress_native_output():
+    import mediapipe as mp
+
+
+def _debug(message):
+    if not quiet_models_enabled():
+        print(message)
+
 
 class APILivenessDetector:
     def __init__(self, ear_threshold=0.22, consecutive_frames=1, model_path=None):
@@ -32,9 +47,10 @@ class APILivenessDetector:
                 running_mode=mp.tasks.vision.RunningMode.IMAGE,
                 num_faces=1,
             )
-            self.face_landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
+            with suppress_native_output():
+                self.face_landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
         except RuntimeError as error:
-            print(f"MediaPipe unavailable ({error}); falling back to OpenCV Haar detection.")
+            _debug(f"MediaPipe unavailable ({error}); falling back to OpenCV Haar detection.")
             self.backend = "opencv"
             cascade_dir = Path(cv2.data.haarcascades)
             self.face_cascade = cv2.CascadeClassifier(str(cascade_dir / "haarcascade_frontalface_default.xml"))
@@ -63,7 +79,7 @@ class APILivenessDetector:
     def download_video_from_api(self, api_url, headers=None):
 
         try:
-            print(f"Downloading video from API: {api_url}")
+            _debug(f"Downloading video from API: {api_url}")
             response = requests.get(api_url, headers=headers, stream=True, timeout=30)
             response.raise_for_status()
 
@@ -78,14 +94,14 @@ class APILivenessDetector:
                     total_size += len(chunk)
 
             temp_file.close()
-            print(f"Downloaded {total_size} bytes to {temp_file.name}")
+            _debug(f"Downloaded {total_size} bytes to {temp_file.name}")
             return temp_file.name
 
         except requests.exceptions.RequestException as e:
-            print(f"Error downloading video: {e}")
+            _debug(f"Error downloading video: {e}")
             return None
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            _debug(f"Unexpected error: {e}")
             return None
 
     def calculate_ear(self, eye_points):
@@ -122,7 +138,8 @@ class APILivenessDetector:
     def detect_face_landmarks(self, frame):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        results = self.face_landmarker.detect(mp_image)
+        with suppress_native_output():
+            results = self.face_landmarker.detect(mp_image)
 
         if not results.face_landmarks:
             return None
@@ -166,8 +183,8 @@ class APILivenessDetector:
         right_ear = self.calculate_ear(right_eye)
         avg_ear = (left_ear + right_ear) / 2.0
 
-        print(f"Frame EAR values - Left: {left_ear:.2f}, Right: {right_ear:.2f}, Average: {avg_ear:.2f}")
-        print(f"Consecutive low EAR count: {self.consecutive_low_ear}")
+        _debug(f"Frame EAR values - Left: {left_ear:.2f}, Right: {right_ear:.2f}, Average: {avg_ear:.2f}")
+        _debug(f"Consecutive low EAR count: {self.consecutive_low_ear}")
 
         return self.update_blink_state(avg_ear), avg_ear, True
 
@@ -182,8 +199,8 @@ class APILivenessDetector:
         eyes = self.eye_cascade.detectMultiScale(eye_region, scaleFactor=1.1, minNeighbors=4)
         eye_openness = 0.3 if len(eyes) >= 2 else 0.0
 
-        print(f"OpenCV eye count: {len(eyes)}, openness: {eye_openness:.2f}")
-        print(f"Consecutive low EAR count: {self.consecutive_low_ear}")
+        _debug(f"OpenCV eye count: {len(eyes)}, openness: {eye_openness:.2f}")
+        _debug(f"Consecutive low EAR count: {self.consecutive_low_ear}")
 
         return self.update_blink_state(eye_openness), eye_openness, True
 
@@ -210,7 +227,7 @@ class APILivenessDetector:
             frame_count = 0
             frames_with_face = 0
 
-            print(f"Analyzing video... (max {duration}s)")
+            _debug(f"Analyzing video... (max {duration}s)")
 
             while frame_count < max_frames:
                 ret, frame = cap.read()
@@ -225,7 +242,7 @@ class APILivenessDetector:
 
                 # Early exit if enough blinks detected
                 if self.blink_count >= min_blinks:
-                    print(f"Early exit: Found {min_blinks} blinks")
+                    _debug(f"Early exit: Found {min_blinks} blinks")
                     break
 
             cap.release()
@@ -246,14 +263,14 @@ class APILivenessDetector:
                 "api_url": api_url
             }
 
-            print(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks)")
+            _debug(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks)")
             return results
 
         finally:
             # Always clean up temporary file
             try:
                 os.unlink(temp_file_path)
-                print(f"Cleaned up temporary file")
+                _debug("Cleaned up temporary file")
             except:
                 pass
 
@@ -273,7 +290,7 @@ class APILivenessDetector:
         frame_count = 0
         frames_with_face = 0
 
-        print(f"Analyzing webcam feed... (max {duration}s)")
+        _debug(f"Analyzing webcam feed... (max {duration}s)")
 
         while frame_count < max_frames:
             ret, frame = cap.read()
@@ -288,7 +305,7 @@ class APILivenessDetector:
 
             # Early exit if enough blinks detected
             if self.blink_count >= 4:  # Default minimum blinks
-                print(f"Early exit: Found 4 blinks")
+                _debug("Early exit: Found 4 blinks")
                 break
 
         cap.release()
@@ -307,7 +324,7 @@ class APILivenessDetector:
             "frames_processed": frame_count
         }
 
-        print(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks)")
+        _debug(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks)")
         return results
 
     def analyze_webcam_with_authenticity_check(self, duration=10):
@@ -332,7 +349,7 @@ class APILivenessDetector:
         frames_with_face = 0
         movement_detected = False
 
-        print(f"Analyzing webcam feed with authenticity check... (max {duration}s)")
+        _debug(f"Analyzing webcam feed with authenticity check... (max {duration}s)")
 
         prev_landmarks = None
 
@@ -373,7 +390,7 @@ class APILivenessDetector:
             "frames_processed": frame_count
         }
 
-        print(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks, movement detected: {movement_detected})")
+        _debug(f"Analysis complete: {'LIVE' if is_live else 'NOT LIVE'} ({self.blink_count} blinks, movement detected: {movement_detected})")
         return results
 
 # Simple usage function

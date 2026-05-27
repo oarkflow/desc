@@ -6,6 +6,9 @@ import cv2
 import numpy as np
 
 from kyc.core.utils import cosine_similarity, normalize_vector
+from kyc.quiet import configure_quiet_ml_runtime, suppress_native_output
+
+configure_quiet_ml_runtime()
 
 
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
@@ -144,18 +147,17 @@ class InsightFaceRecognitionProvider(FaceRecognitionProvider):
             return
 
         try:
-            from insightface.app import FaceAnalysis
-        except Exception as error:
-            self.load_error = f"insightface is required for InsightFace recognition: {error}"
-            return
+            with suppress_native_output():
+                from insightface.app import FaceAnalysis
 
-        try:
-            self.app = FaceAnalysis(
-                name=self.model_name,
-                root=str(self.model_root),
-                providers=["CPUExecutionProvider"],
-            )
-            self.app.prepare(ctx_id=-1, det_size=self.det_size)
+                self.app = FaceAnalysis(
+                    name=self.model_name,
+                    root=str(self.model_root),
+                    providers=["CPUExecutionProvider"],
+                )
+                self.app.prepare(ctx_id=-1, det_size=self.det_size)
+        except ImportError as error:
+            self.load_error = f"insightface is required for InsightFace recognition: {error}"
         except Exception as error:
             self.app = None
             self.load_error = f"InsightFace model could not be loaded: {error}"

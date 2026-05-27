@@ -164,6 +164,7 @@ func (g *gateway) routes() http.Handler {
 	mux.HandleFunc("GET /metrics", g.metricsEndpoint)
 	mux.HandleFunc("POST /ocr", g.ocr)
 	mux.HandleFunc("POST /describe", g.describe)
+	g.registerIdentityRoutes(mux)
 	g.registerAdminRoutes(mux)
 	mux.HandleFunc("/", g.notFound)
 	return g.withMetrics(mux)

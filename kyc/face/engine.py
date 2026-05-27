@@ -32,6 +32,10 @@ from .attributes import (
 )
 from .image_loader import load_image, image_info
 from .visualizer import draw_faces, save_image
+try:
+    from kyc.quiet import quiet_models_enabled
+except ModuleNotFoundError:
+    from quiet import quiet_models_enabled
 
 
 @dataclass
@@ -163,21 +167,25 @@ class FacePlatform:
         if landmark_mode in ("auto", "mediapipe") and mediapipe_model_path:
             try:
                 self._mp_detector = MediaPipeLandmarkDetector(mediapipe_model_path)
-                print("[FacePlatform] MediaPipe 478-point landmark model loaded ✓")
+                if not quiet_models_enabled():
+                    print("[FacePlatform] MediaPipe 478-point landmark model loaded ✓")
             except Exception as e:
                 if landmark_mode == "mediapipe":
                     raise RuntimeError(
                         "MediaPipe 478-point landmark model is required for "
                         "face detection/recognition, but it failed to load."
                     ) from e
-                print(f"[FacePlatform] MediaPipe model failed ({e}), trying LBF")
+                if not quiet_models_enabled():
+                    print(f"[FacePlatform] MediaPipe model failed ({e}), trying LBF")
 
         if self._mp_detector is None and landmark_mode in ("auto", "lbf") and lbf_model_path:
             try:
                 self._lbf_detector = LBFLandmarkDetector(lbf_model_path)
-                print(f"[FacePlatform] LBF 68-point landmark model loaded ✓")
+                if not quiet_models_enabled():
+                    print(f"[FacePlatform] LBF 68-point landmark model loaded ✓")
             except Exception as e:
-                print(f"[FacePlatform] LBF model failed ({e}), using region fallback")
+                if not quiet_models_enabled():
+                    print(f"[FacePlatform] LBF model failed ({e}), using region fallback")
 
         # ── Recognizer ────────────────────────────────────────────────────────
         self.recognizer = FusionRecognizer(lbph_threshold, hog_threshold) if recognition_enabled else None

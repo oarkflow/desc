@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 import logging
+import warnings
 from contextlib import redirect_stdout
 from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
@@ -26,6 +27,12 @@ DEFAULT_CACHE_DIR = Path(os.getenv("OCR_CACHE_DIR", "./.ocr_cache")).resolve()
 os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(DEFAULT_CACHE_DIR / "paddlex"))
 os.environ.setdefault("MPLCONFIGDIR", str(DEFAULT_CACHE_DIR / "matplotlib"))
 os.environ.setdefault("TESSDATA_PREFIX", str(DEFAULT_CACHE_DIR / "tessdata"))
+try:
+    from kyc.quiet import configure_quiet_ml_runtime, suppress_native_output
+except ModuleNotFoundError:
+    from quiet import configure_quiet_ml_runtime, suppress_native_output
+
+configure_quiet_ml_runtime()
 
 import cv2
 import numpy as np
@@ -119,7 +126,7 @@ def ocr_uses_gpu() -> bool:
     return ocr_device().lower().startswith("gpu")
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, os.getenv("OCR_PY_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
@@ -195,7 +202,7 @@ class OCREngine:
         self.text_recognition_model = text_recognition_model or ""
         self.ocr_version = ocr_version or settings.OCR_VERSION
         self.device = ocr_device()
-        logger.info(
+        logger.debug(
             "Loading PaddleOCR model for lang=%s det=%s rec=%s device=%s...",
             lang,
             self.text_detection_model or "auto",
@@ -234,8 +241,11 @@ class OCREngine:
             ocr_kwargs["lang"] = lang
             ocr_kwargs["ocr_version"] = self.ocr_version
 
-        self.ocr = PaddleOCR(**ocr_kwargs)
-        logger.info("PaddleOCR model loaded for lang=%s device=%s", lang, self.device)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="No ccache found.*")
+            with suppress_native_output():
+                self.ocr = PaddleOCR(**ocr_kwargs)
+        logger.debug("PaddleOCR model loaded for lang=%s device=%s", lang, self.device)
 
     @classmethod
     def instance(

@@ -16,13 +16,20 @@ from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+try:
+    from kyc.quiet import configure_quiet_ml_runtime, suppress_native_output
+except ModuleNotFoundError:
+    from quiet import configure_quiet_ml_runtime, suppress_native_output
+
+configure_quiet_ml_runtime()
 
 MEDIAPIPE_LANDMARK_COUNT = 478
 
 try:
-    import mediapipe as mp
-    from mediapipe.tasks import python as mp_python
-    from mediapipe.tasks.python import vision as mp_vision
+    with suppress_native_output():
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
 except ImportError:
     mp = None
     mp_python = None
@@ -222,7 +229,11 @@ class MediaPipeLandmarkDetector:
         if not Path(model_path).exists():
             raise FileNotFoundError(f"MediaPipe model not found: {model_path}")
 
-        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        base_options_kwargs = {"model_asset_path": model_path}
+        delegate = getattr(getattr(mp_python, "BaseOptions", object), "Delegate", None)
+        if delegate is not None and hasattr(delegate, "CPU"):
+            base_options_kwargs["delegate"] = delegate.CPU
+        base_options = mp_python.BaseOptions(**base_options_kwargs)
         options = mp_vision.FaceLandmarkerOptions(
             base_options=base_options,
             output_face_blendshapes=True,
@@ -233,13 +244,15 @@ class MediaPipeLandmarkDetector:
             min_tracking_confidence=0.4,
             running_mode=mp_vision.RunningMode.IMAGE,
         )
-        self.landmarker = mp_vision.FaceLandmarker.create_from_options(options)
+        with suppress_native_output():
+            self.landmarker = mp_vision.FaceLandmarker.create_from_options(options)
         self._num_faces = num_faces
 
     def detect(self, image: np.ndarray, face_bboxes=None) -> List["LandmarkResult"]:
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        detection_result = self.landmarker.detect(mp_image)
+        with suppress_native_output():
+            detection_result = self.landmarker.detect(mp_image)
 
         results = []
         h, w = image.shape[:2]
@@ -274,7 +287,8 @@ class MediaPipeLandmarkDetector:
 
     def close(self) -> None:
         if getattr(self, "landmarker", None) is not None:
-            self.landmarker.close()
+            with suppress_native_output():
+                self.landmarker.close()
             self.landmarker = None
 
     def __del__(self):

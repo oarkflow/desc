@@ -1,8 +1,12 @@
 import json
 import os
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -19,6 +23,7 @@ from kyc.kyc import (
     OCRProfileMapper,
     decode_data_url,
 )
+from kyc.core.liveness import AntiSpoofingProvider
 
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -29,6 +34,11 @@ ocr_gateway = OCRGatewayClient()
 ocr_mapper = OCRProfileMapper()
 face_match_service = FaceMatchService(repo)
 liveness_service = LivenessService()
+identity_liveness_service = LivenessService()
+
+
+def default_identity_challenge() -> list[str]:
+    return ["blink", "turn_left", "turn_right", "look_center"]
 
 
 def json_error(message: str, status: int = 400) -> JSONResponse:
@@ -122,6 +132,61 @@ async def applicant_kyc(request: Request, session_token: str):
             "session_token": session_token,
         },
     )
+
+
+async def identity_portrait(request: Request):
+    try:
+        data, filename, content_type = await uploaded_bytes(request)
+        image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return json_error("Invalid portrait image")
+
+        from kyc.face import FacePlatform
+
+        model_dir = Path(__file__).resolve().parent / "models"
+        mediapipe_model = model_dir / "face_landmarker.task"
+        yunet_model = model_dir / "face_detection_yunet_2023mar.onnx"
+        platform = FacePlatform(
+            mediapipe_model_path=str(mediapipe_model) if mediapipe_model.exists() else None,
+            yunet_model_path=str(yunet_model) if yunet_model.exists() else None,
+            detection_mode="yunet" if yunet_model.exists() else "multiscale",
+            landmark_mode="mediapipe" if mediapipe_model.exists() else "auto",
+            recognition_enabled=False,
+            demographic_enabled=False,
+        )
+        try:
+            face_result = platform.analyze(image, return_annotated=False).to_dict()
+        finally:
+            platform.close()
+
+        anti_spoofing = AntiSpoofingProvider().analyze(image)
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "face": face_result,
+            "anti_spoofing": anti_spoofing,
+        }
+    except ValueError as error:
+        return json_error(str(error))
+
+
+async def identity_liveness_frame(request: Request):
+    try:
+        data, _, _ = await uploaded_bytes(request)
+        session_id = request.query_params.get("session_id") or "identity-workbench"
+        challenge = request.query_params.getlist("challenge") or default_identity_challenge()
+        return identity_liveness_service.analyze_frame_bytes(data, session_id=session_id, challenge=challenge)
+    except ValueError as error:
+        return json_error(str(error))
+
+
+async def identity_liveness_complete(request: Request):
+    session_id = request.query_params.get("session_id") or "identity-workbench"
+    challenge = request.query_params.getlist("challenge") or default_identity_challenge()
+    return {
+        "liveness": identity_liveness_service.finalize_session(session_id, challenge),
+        "session_id": session_id,
+    }
 
 
 async def document_types():
@@ -310,6 +375,9 @@ def add_kyc_routes(target: FastAPI) -> None:
     target.add_api_route("/api/kyc/sessions/{session_id}/liveness/frame", process_liveness_frame, methods=["POST"])
     target.add_api_route("/api/kyc/sessions/{session_id}/liveness/complete", complete_liveness, methods=["POST"])
     target.add_api_route("/api/kyc/sessions/{session_id}/liveness/video", upload_liveness_video, methods=["POST"])
+    target.add_api_route("/identity/api/portrait", identity_portrait, methods=["POST"])
+    target.add_api_route("/identity/api/liveness/frame", identity_liveness_frame, methods=["POST"])
+    target.add_api_route("/identity/api/liveness/complete", identity_liveness_complete, methods=["POST"])
 
 
 if __name__ == "__main__":

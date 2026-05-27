@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Identity Workbench</title>
+  <link rel="stylesheet" href="/identity/static/identity.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Identity Workbench</h1>
+      <p>Document OCR, portrait checks, face matching evidence, anti-spoofing, and webcam liveness.</p>
+    </div>
+    {{if .APIKeyConfigured}}<input id="apiKey" type="password" placeholder="Gateway API key">{{end}}
+  </header>
+
+  <main>
+    <section>
+      <h2>Document</h2>
+      <div class="controls">
+        <label>Document image<input id="documentFile" type="file" accept="image/*,.pdf"></label>
+        <label>Result mode<select id="documentMode"><option value="values">Values</option><option value="summary">Summary</option><option value="full">Full</option></select></label>
+        <label class="check"><input id="forceDocType" type="checkbox"> Force profile</label>
+        <label>Profile<input id="documentType" placeholder="auto-detect"></label>
+        <button id="documentRun" type="button">Run OCR</button>
+      </div>
+      <canvas id="documentCanvas" width="960" height="640"></canvas>
+      <pre id="documentResult">Upload a document to extract fields and document-face anti-spoof evidence.</pre>
+    </section>
+
+    <section>
+      <h2>Portrait</h2>
+      <div class="controls">
+        <label>Portrait or selfie<input id="portraitFile" type="file" accept="image/*"></label>
+        <button id="portraitRun" type="button">Analyze Face</button>
+      </div>
+      <pre id="portraitResult">Upload a portrait for face detection, landmarks, and anti-spoofing.</pre>
+    </section>
+
+    <section>
+      <h2>Webcam Liveness</h2>
+      <div class="controls">
+        <label class="check"><input class="challenge" type="checkbox" value="blink" checked> Blink</label>
+        <label class="check"><input class="challenge" type="checkbox" value="turn_left" checked> Turn left</label>
+        <label class="check"><input class="challenge" type="checkbox" value="turn_right" checked> Turn right</label>
+        <label class="check"><input class="challenge" type="checkbox" value="look_center" checked> Look center</label>
+        <button id="cameraStart" type="button">Start Camera</button>
+        <button id="livenessStart" type="button" disabled>Start Liveness</button>
+        <button id="livenessFinish" type="button" disabled>Finish</button>
+      </div>
+      <video id="webcam" autoplay muted playsinline></video>
+      <canvas id="frameCanvas" width="640" height="480" hidden></canvas>
+      <div class="signals">
+        <div><strong>Face</strong><span id="faceSignal">Waiting</span></div>
+        <div><strong>Blink</strong><span id="blinkSignal">Waiting</span></div>
+        <div><strong>Head</strong><span id="headSignal">Waiting</span></div>
+        <div><strong>Status</strong><span id="riskSignal">Waiting</span></div>
+      </div>
+      <pre id="livenessResult">Start the camera to process live frames through the Python liveness service.</pre>
+    </section>
+  </main>
+
+  <script src="/identity/static/identity.js"></script>
+</body>
+</html>

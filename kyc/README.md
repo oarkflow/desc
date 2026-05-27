@@ -48,6 +48,16 @@ GATEWAY_API_KEY=change-me \
 go run ./cmd/gateway
 ```
 
+If port `8000` is already in use, pick another port, for example `GATEWAY_PORT=8002`, and replace `localhost:8000` in the curl examples with `localhost:8002`.
+
+Open the gateway identity workbench for browser testing:
+
+```text
+http://localhost:8000/identity?api_key=change-me
+```
+
+The workbench is served by the Go gateway and calls the Python OCR/KYC service through the gateway. It supports document upload, portrait upload, document OCR/object/tamper checks, face analysis, anti-spoofing, and webcam liveness challenge frames.
+
 Run the complete real-model image matrix and write reports:
 
 ```sh
@@ -248,6 +258,54 @@ curl -sS -X POST "http://localhost:8000/admin/api/preview" \
   -F "file=@kyc/testdata/national-id.webp"
 ```
 
+Gateway identity workbench page and static asset smoke checks:
+
+```sh
+curl -sS "http://localhost:8000/identity?api_key=change-me"
+
+curl -sS "http://localhost:8000/identity/static/identity.js" \
+  -H "X-API-Key: change-me"
+```
+
+Gateway document OCR with automatic document type detection:
+
+```sh
+curl -sS -X POST "http://localhost:8000/ocr?values_only=true&include_stats=true" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Gateway document OCR with full evidence, object detection, document face/photo detection, document anti-spoofing, and tamper summary:
+
+```sh
+curl -sS -X POST "http://localhost:8000/ocr?values_only=false&detect_objects=true&accuracy_mode=accurate&retry=true" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Gateway portrait/face analysis with anti-spoofing:
+
+```sh
+curl -sS -X POST "http://localhost:8000/identity/api/portrait" \
+  -H "X-API-Key: change-me" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+```
+
+Gateway liveness frame challenge:
+
+```sh
+curl -sS -X POST "http://localhost:8000/identity/api/liveness/frame?session_id=test-session&challenge=blink&challenge=turn_left&challenge=turn_right&challenge=look_center" \
+  -H "X-API-Key: change-me" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+```
+
+Gateway liveness completion:
+
+```sh
+curl -sS -X POST "http://localhost:8000/identity/api/liveness/complete?session_id=test-session&challenge=blink&challenge=turn_left&challenge=turn_right&challenge=look_center" \
+  -H "X-API-Key: change-me"
+```
+
 Python OCR/KYC server direct requests:
 
 ```sh
@@ -315,6 +373,45 @@ The UI can:
 - Upload a document preview through multipart form upload and view OCR JSON plus image overlays.
 - Validate YAML through the OCR service before saving.
 - Save files atomically with timestamped backups and request OCR config reloads.
+
+### `GET /identity`
+
+Serves the gateway-hosted identity workbench for browser testing. If `GATEWAY_API_KEY` is set, open it with the key once to set a cookie:
+
+```sh
+http://localhost:8000/identity?api_key=change-me
+```
+
+The workbench provides document upload, portrait upload, document OCR/object/tamper checks, face analysis, anti-spoofing, and webcam liveness challenge capture.
+
+### `POST /identity/api/portrait`
+
+Proxies portrait face analysis to the Python OCR/KYC service. The response includes face count, boxes/landmarks where available, demographics where available, and anti-spoofing status.
+
+```sh
+curl -sS -X POST "http://localhost:8000/identity/api/portrait" \
+  -H "X-API-Key: change-me" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+```
+
+### `POST /identity/api/liveness/frame`
+
+Proxies one captured webcam frame to the Python liveness service. Send the same `session_id` for all frames in a single browser/test run. Repeating `challenge` query parameters defines the expected challenge sequence.
+
+```sh
+curl -sS -X POST "http://localhost:8000/identity/api/liveness/frame?session_id=test-session&challenge=blink&challenge=turn_left&challenge=turn_right&challenge=look_center" \
+  -H "X-API-Key: change-me" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+```
+
+### `POST /identity/api/liveness/complete`
+
+Completes a liveness session and returns the aggregate challenge result.
+
+```sh
+curl -sS -X POST "http://localhost:8000/identity/api/liveness/complete?session_id=test-session&challenge=blink&challenge=turn_left&challenge=turn_right&challenge=look_center" \
+  -H "X-API-Key: change-me"
+```
 
 ### `GET /healthz`
 
