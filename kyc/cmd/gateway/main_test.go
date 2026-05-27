@@ -129,6 +129,37 @@ func TestOCRRejectsLargeBody(t *testing.T) {
 	}
 }
 
+func TestDescribeProxyForwardsMultipartUpload(t *testing.T) {
+	var upstreamPath string
+	var upstreamBody string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"caption":"document","tags":["document"],"tamper":{"verdict":"no_obvious_tampering"}}`))
+	})
+	gw := testGateway(t, "secret", upstream)
+
+	body, contentType := multipartBody(t)
+	req := httptest.NewRequest(http.MethodPost, "/describe", strings.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-API-Key", "secret")
+	rec := httptest.NewRecorder()
+
+	gw.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if upstreamPath != "/describe" {
+		t.Fatalf("upstream path = %q, want /describe", upstreamPath)
+	}
+	if !strings.Contains(upstreamBody, "hello") {
+		t.Fatalf("upstream body did not contain upload data")
+	}
+}
+
 func TestAdminRequiresAPIKey(t *testing.T) {
 	gw := testGateway(t, "secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/document-types", nil)

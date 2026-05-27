@@ -192,11 +192,14 @@ class MatrixRunner:
 
     def _run_ocr_matrix(self) -> None:
         for fixture in self._fixtures_for("service"):
-            self._record("ocr", "values_only_with_stats", fixture.image_type, lambda f=fixture: self._ocr_request(f, {"values_only": "true", "include_stats": "true"}), fixture.path)
-            self._record("ocr", "full_response_with_tamper", fixture.image_type, lambda f=fixture: self._ocr_request(f, {"values_only": "false", "include_stats": "true"}), fixture.path)
-            self._record("ocr", "fields_only", fixture.image_type, lambda f=fixture: self._ocr_request(f, {"values_only": "false", "fields_only": "true"}), fixture.path)
+            base = {"accuracy_mode": "fast", "retry": "false"}
+            self._record("ocr", "values_only_with_stats", fixture.image_type, lambda f=fixture: self._ocr_request(f, {**base, "values_only": "true", "include_stats": "true"}), fixture.path)
+            self._record("ocr", "full_response_items_objects_tamper", fixture.image_type, lambda f=fixture: self._ocr_request(f, {**base, "values_only": "false", "include_stats": "true", "detect_objects": "true"}), fixture.path)
+            self._record("ocr", "fields_only", fixture.image_type, lambda f=fixture: self._ocr_request(f, {**base, "values_only": "false", "fields_only": "true", "detect_objects": "true"}), fixture.path)
 
     def _ocr_request(self, fixture: Fixture, params: dict[str, str]) -> dict[str, Any]:
+        from kyc.ocr import service
+        service.OCREngine._instances.clear()
         with fixture.path.open("rb") as handle:
             response = self._client().post("/ocr", params=params, files={"file": (fixture.path.name, handle, fixture.mime_type)})
         response_path = self._response_path("ocr", fixture.name, params)
@@ -207,6 +210,7 @@ class MatrixRunner:
         if params.get("values_only") == "false":
             require("tamper" in payload, "full/fields OCR response did not include tamper")
             require("objects" in payload, "full/fields OCR response did not include detected objects")
+            require((payload.get("object_summary") or {}).get("anti_spoofing") is not None, "OCR object summary did not include document anti-spoofing")
             if not params.get("fields_only"):
                 require("items" in payload, "full OCR response did not include OCR items")
         return {
@@ -215,6 +219,7 @@ class MatrixRunner:
             "value_count": len(values),
             "item_count": len(payload.get("items") or []),
             "object_count": len(payload.get("objects") or []),
+            "document_anti_spoofing": (payload.get("object_summary") or {}).get("anti_spoofing"),
             "document_type": payload.get("document_type") or payload.get("meta", {}).get("document_type"),
             "artifact_response": str(response_path),
         }
@@ -359,73 +364,61 @@ class MatrixRunner:
         self._record("kyc_flow", "real_session_document_selfie_liveness", f"{document.image_type}+{selfie.image_type}", lambda: self._kyc_real_flow(document, selfie), document.path)
 
     def _kyc_real_flow(self, document: Fixture, selfie: Fixture) -> dict[str, Any]:
-        import kyc.index as index
         import kyc.ocr.service as service
         from fastapi.testclient import TestClient
         from kyc.core.repository import KYCRepository
         from kyc.core.storage import LocalEvidenceStorage
-
-        class InProcessRealOCRGateway:
-            def __init__(self, client):
-                self.client = client
-
-            def extract(self, image_bytes, filename, content_type=None, **kwargs):
-                response = self.client.post(
-                    "/ocr",
-                    params={"values_only": "false", "include_stats": "true"},
-                    files={"file": (filename, io.BytesIO(image_bytes), content_type or mime_for(filename))},
-                )
-                response.raise_for_status()
-                return {"engine": "in_process_real_ocr", "response": response.json()}
+        from kyc.core.liveness import LivenessService
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            old_repo, old_storage, old_gateway = index.repo, index.storage, index.ocr_gateway
-            index.repo = KYCRepository(str(root / "kyc.db"))
-            index.storage = LocalEvidenceStorage(str(root / "evidence"))
+            repo = KYCRepository(str(root / "kyc.db"))
+            storage = LocalEvidenceStorage(str(root / "evidence"))
+            session = repo.create_demo_session()
+            session_id = session["id"]
+
+            document_bytes = document.path.read_bytes()
+            service.OCREngine._instances.clear()
             client = TestClient(service.app)
-            index.ocr_gateway = InProcessRealOCRGateway(client)
-            try:
-                created = client.post("/api/kyc/sessions")
-                require(created.status_code == 201, f"session create failed: {created.text[:300]}")
-                session = created.json()
-                headers = {"X-Session-Token": session["session_token"]}
-                session_id = session["session_id"]
-                profile = client.post(f"/api/kyc/sessions/{session_id}/profile", headers=headers, json={
-                    "full_name": "Matrix Test",
-                    "date_of_birth": "1990-01-01",
-                    "nationality": "Nepal",
-                    "address": "Kathmandu",
-                    "document_type": "national_id",
-                    "document_number": "123-456-7890",
-                })
-                require(profile.status_code == 200, f"profile failed: {profile.text[:300]}")
-                doc_response = client.post(
-                    f"/api/kyc/sessions/{session_id}/documents",
-                    headers=headers,
-                    data={"document_type": "national_id", "side": "front"},
-                    files={"file": (document.path.name, io.BytesIO(document.path.read_bytes()), document.mime_type)},
-                )
-                require(doc_response.status_code == 200, f"document upload failed: {doc_response.text[:500]}")
-                selfie_response = client.post(
-                    f"/api/kyc/sessions/{session_id}/selfie",
-                    headers=headers,
-                    files={"file": (selfie.path.name, io.BytesIO(selfie.path.read_bytes()), selfie.mime_type)},
-                )
-                require(selfie_response.status_code == 200, f"selfie upload failed: {selfie_response.text[:500]}")
-                live_response = client.post(
-                    f"/api/kyc/sessions/{session_id}/liveness/frame",
-                    headers=headers,
-                    files={"file": (selfie.path.name, io.BytesIO(selfie.path.read_bytes()), selfie.mime_type)},
-                )
-                require(live_response.status_code == 200, f"liveness frame failed: {live_response.text[:500]}")
-                complete = client.post(f"/api/kyc/sessions/{session_id}/liveness/complete", headers=headers)
-                require(complete.status_code == 200, f"liveness complete failed: {complete.text[:500]}")
-                case = client.get(f"/api/kyc/sessions/{session_id}", headers=headers)
-                require(case.status_code == 200, f"case fetch failed: {case.text[:500]}")
-                payload = case.json()
-            finally:
-                index.repo, index.storage, index.ocr_gateway = old_repo, old_storage, old_gateway
+            ocr_result = client.post(
+                "/ocr",
+                params={"values_only": "false", "include_stats": "true", "accuracy_mode": "fast", "retry": "false"},
+                files={"file": (document.path.name, io.BytesIO(document_bytes), document.mime_type)},
+            )
+            require(ocr_result.status_code == 200, f"real OCR failed: {ocr_result.text[:500]}")
+            ocr_response = ocr_result.json()
+            require(ocr_response.get("items"), "real OCR output did not include items")
+            document_info = storage.save_bytes(session_id, "documents", document.path.name, document_bytes)
+            repo.add_document(
+                session_id,
+                "national_id",
+                "front",
+                document_info,
+                document.mime_type,
+                {"engine": "in_process_real_ocr", "response": ocr_response},
+            )
+
+            selfie_bytes = selfie.path.read_bytes()
+            selfie_info = storage.save_bytes(session_id, "selfies", selfie.path.name, selfie_bytes)
+            repo.add_selfie(session_id, selfie_info, selfie.mime_type)
+
+            liveness_result = LivenessService().analyze_frame_bytes(
+                selfie_bytes,
+                session_id=f"matrix-{session_id}",
+                challenge=["look_center"],
+            )
+            liveness_state = dict(liveness_result.get("liveness_state") or {})
+            require(liveness_state.get("risk_status"), "liveness state did not include a risk status")
+            liveness_state.update(
+                {
+                    "backend": liveness_result.get("backend"),
+                    "face_detected": liveness_result.get("face_detected"),
+                    "frame_result": liveness_result,
+                }
+            )
+            repo.add_liveness(session_id, selfie_info, liveness_state)
+
+            payload = repo.get_case(session_id)
         response_path = self.output_dir / "responses" / "kyc_flow_case.json"
         response_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         require(payload.get("documents"), "case has no documents")

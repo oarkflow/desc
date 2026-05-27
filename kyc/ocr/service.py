@@ -441,6 +441,7 @@ def empty_object_summary() -> dict[str, Any]:
         "id_card_confidence": 0.0,
         "face_count": 0,
         "text_region_count": 0,
+        "anti_spoofing": empty_anti_spoofing_summary(),
     }
 
 
@@ -478,13 +479,108 @@ def summarize_objects(objects: list[dict[str, Any]]) -> dict[str, Any]:
         default=0.0,
     )
     face_objects = [item for item in objects if item.get("label") == "face"]
+    anti_spoofing = summarize_object_anti_spoofing(objects)
     return {
         "has_id_card": id_card_confidence > 0,
         "id_card_confidence": round(id_card_confidence, 4),
         "face_count": len(face_objects),
         "face_detection_method": "opencv_heuristic" if face_objects else "",
         "text_region_count": sum(1 for item in objects if item.get("label") == "text_region"),
+        "anti_spoofing": anti_spoofing,
     }
+
+
+def empty_anti_spoofing_summary() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "available": False,
+        "status": "not_run",
+        "regions_checked": 0,
+        "spoof_count": 0,
+        "live_count": 0,
+        "manual_review_count": 0,
+    }
+
+
+def summarize_object_anti_spoofing(objects: list[dict[str, Any]]) -> dict[str, Any]:
+    results = [
+        obj.get("anti_spoofing")
+        for obj in objects
+        if isinstance(obj.get("anti_spoofing"), dict)
+    ]
+    if not results:
+        return empty_anti_spoofing_summary()
+    statuses = [str(result.get("status") or "unknown") for result in results]
+    live_scores = [
+        float(result["live_score"])
+        for result in results
+        if result.get("live_score") is not None
+    ]
+    if "spoof" in statuses:
+        status = "spoof"
+    elif "live" in statuses:
+        status = "live"
+    elif "needs_manual_review" in statuses:
+        status = "needs_manual_review"
+    else:
+        status = statuses[-1]
+    summary = {
+        "enabled": any(bool(result.get("enabled")) for result in results),
+        "available": any(bool(result.get("available")) for result in results),
+        "status": status,
+        "regions_checked": len(results),
+        "spoof_count": statuses.count("spoof"),
+        "live_count": statuses.count("live"),
+        "manual_review_count": statuses.count("needs_manual_review"),
+        "provider": next((result.get("provider") for result in results if result.get("provider")), ""),
+        "model_version": next((result.get("model_version") for result in results if result.get("model_version")), ""),
+    }
+    if live_scores:
+        summary["live_score"] = round(float(np.mean(live_scores)), 4)
+    return summary
+
+
+def apply_document_anti_spoofing(image_rgb: np.ndarray, objects: list[dict[str, Any]]) -> dict[str, Any]:
+    targets = [
+        obj
+        for obj in objects
+        if obj.get("label") in {"face", "photo", "portrait"}
+    ]
+    if not targets:
+        return empty_anti_spoofing_summary()
+    try:
+        from kyc.core.liveness import AntiSpoofingProvider
+
+        provider = AntiSpoofingProvider()
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        for index, obj in enumerate(targets):
+            bounds = object_pixel_bounds(obj)
+            face_box = None
+            if bounds:
+                x1, y1, x2, y2 = bounds
+                face_box = {
+                    "x": x1,
+                    "y": y1,
+                    "width": max(x2 - x1, 1),
+                    "height": max(y2 - y1, 1),
+                }
+            result = provider.analyze(image_bgr, face_box=face_box)
+            result["target"] = "document_face"
+            result["target_index"] = index
+            obj["anti_spoofing"] = result
+    except Exception as error:
+        logger.exception("Document anti-spoofing failed")
+        for index, obj in enumerate(targets):
+            obj["anti_spoofing"] = {
+                "enabled": True,
+                "available": False,
+                "status": "needs_manual_review",
+                "provider": "onnx_anti_spoof",
+                "target": "document_face",
+                "target_index": index,
+                "reason": f"Document anti-spoofing failed: {error}",
+            }
+    return summarize_object_anti_spoofing(objects)
 
 
 class ObjectDetectionProvider:
@@ -638,6 +734,7 @@ class ObjectDetectionService:
 
     def detect(self, image: np.ndarray, ocr_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         objects = self.provider.detect(image, ocr_items)
+        apply_document_anti_spoofing(image, objects)
         return objects, summarize_objects(objects)
 
 
@@ -875,12 +972,6 @@ def resolve_document_profile(
     items: list[dict[str, Any]],
 ) -> tuple[str, Optional[DocumentProfile], float]:
     profiles = load_document_profiles()
-    if document_type:
-        profile = profiles.document_types.get(document_type)
-        if profile:
-            return document_type, profile, 1.0
-        return document_type, None, 0.0
-
     full_text = normalize_text(items)
     best_type = "unknown"
     best_profile: Optional[DocumentProfile] = None
@@ -899,6 +990,19 @@ def resolve_document_profile(
             best_profile = profile
             best_score = score
             best_total = total
+
+    if document_type:
+        profile = profiles.document_types.get(document_type)
+        if profile:
+            requested_score = sum(
+                1
+                for cue in profile.detect.cues
+                if cue.text and label_similarity(cue.text, full_text)
+            )
+            if requested_score == 0 and best_profile is not None and best_type != document_type:
+                return best_type, best_profile, round(best_score / best_total if best_total else 0.0, 4)
+            return document_type, profile, 1.0
+        return document_type, None, 0.0
 
     confidence = best_score / best_total if best_total else 0.0
     return best_type, best_profile, round(confidence, 4)
@@ -4581,11 +4685,13 @@ def aggregate_tamper_results(results: list[TamperResult]) -> TamperResult:
                 "tamper_score": result.tamper_score,
                 "status": result.status,
                 "flag_count": len(result.flags),
+                "object_summary": result.checks.get("object_summary", {}),
             }
             for result in results
         ],
         "aggregate_strategy": "max_page_score",
         "worst_page": worst.checks.get("page_number"),
+        "object_summary": worst.checks.get("object_summary", {}),
     }
     return TamperResult(
         tamper_score=worst.tamper_score,

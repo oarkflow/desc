@@ -99,6 +99,7 @@ class OCREndpointTests(unittest.TestCase):
         self.assertIn("objects", payload)
         self.assertIn("object_summary", payload)
         self.assertIn("tamper", payload)
+        self.assertIn("anti_spoofing", payload["object_summary"])
 
     def test_values_only_keeps_lightweight_metadata_wrapper(self):
         response = self.post_image("?values_only=true")
@@ -130,6 +131,35 @@ class OCREndpointTests(unittest.TestCase):
         self.assertIn("fields", payload)
         self.assertIn("tamper", payload)
         self.assertNotIn("items", payload)
+
+    def test_document_face_objects_get_anti_spoofing_result(self):
+        class FakeAntiSpoofingProvider:
+            def analyze(self, image, face_box=None):
+                return {
+                    "enabled": True,
+                    "available": True,
+                    "status": "spoof",
+                    "live_score": 0.12,
+                    "provider": "fake",
+                    "model_version": "fake.onnx",
+                    "face_box": face_box,
+                }
+
+        objects = [
+            {
+                "label": "face",
+                "confidence": 0.9,
+                "box": {"pixel": {"x": 1, "y": 1, "width": 6, "height": 6}},
+            }
+        ]
+        image = np.zeros((10, 10, 3), dtype=np.uint8)
+        with mock.patch("kyc.core.liveness.AntiSpoofingProvider", return_value=FakeAntiSpoofingProvider()):
+            summary = ocr_service.apply_document_anti_spoofing(image, objects)
+
+        self.assertEqual(summary["status"], "spoof")
+        self.assertEqual(summary["regions_checked"], 1)
+        self.assertEqual(objects[0]["anti_spoofing"]["target"], "document_face")
+        self.assertEqual(objects[0]["anti_spoofing"]["face_box"]["width"], 6.0)
 
     def test_include_stats_adds_runtime_metadata_to_values_response(self):
         response = self.post_image("?values_only=true&include_stats=true")
@@ -636,6 +666,44 @@ class DocumentProfileConfigTests(unittest.TestCase):
         self.assertTrue(
             any(item.label == "face" and item.required for item in national_id.tamper.expected_objects)
         )
+
+    def test_explicit_document_type_with_zero_cues_falls_back_to_detected_profile(self):
+        config = ocr_service.DocumentProfilesConfig(
+            document_types={
+                "nepali_national_id": ocr_service.DocumentProfile(
+                    detect=ocr_service.DetectConfig(
+                        cues=[
+                            ocr_service.DetectCue(text="NATIONAL IDENTITY CARD"),
+                            ocr_service.DetectCue(text="राष्ट्रिय परिचयपत्र"),
+                        ]
+                    )
+                ),
+                "nepali_citizenship_mixed_language": ocr_service.DocumentProfile(
+                    detect=ocr_service.DetectConfig(
+                        cues=[
+                            ocr_service.DetectCue(text="Citizenship Certificate"),
+                            ocr_service.DetectCue(text="Full Name"),
+                        ]
+                    )
+                ),
+            }
+        )
+        items = [
+            {
+                "text": "Government of Nepal has issued this Citizenship Certificate with following details Full Name",
+                "confidence": 0.99,
+            }
+        ]
+
+        with mock.patch.object(ocr_service, "load_document_profiles", return_value=config):
+            resolved_type, profile, confidence = ocr_service.resolve_document_profile(
+                "nepali_national_id",
+                items,
+            )
+
+        self.assertEqual(resolved_type, "nepali_citizenship_mixed_language")
+        self.assertIs(profile, config.document_types["nepali_citizenship_mixed_language"])
+        self.assertGreater(confidence, 0)
 
 
 class OCRCLITests(unittest.TestCase):

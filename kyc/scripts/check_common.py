@@ -1,6 +1,7 @@
 import argparse
 import json
 import mimetypes
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,9 @@ TESTDATA_DIR = KYC_ROOT / "testdata"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+os.environ.setdefault("OCR_CACHE_DIR", str(KYC_ROOT / ".ocr_cache"))
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
 def existing_path(value):

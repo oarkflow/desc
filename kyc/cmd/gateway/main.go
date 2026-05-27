@@ -163,6 +163,7 @@ func (g *gateway) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", g.health)
 	mux.HandleFunc("GET /metrics", g.metricsEndpoint)
 	mux.HandleFunc("POST /ocr", g.ocr)
+	mux.HandleFunc("POST /describe", g.describe)
 	g.registerAdminRoutes(mux)
 	mux.HandleFunc("/", g.notFound)
 	return g.withMetrics(mux)
@@ -269,6 +270,66 @@ func (g *gateway) ocr(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	g.metrics.ocrLatencyMS.Add(uint64(time.Since(started).Milliseconds()))
+}
+
+func (g *gateway) describe(w http.ResponseWriter, r *http.Request) {
+	if !g.authorized(r) {
+		g.metrics.authFailuresTotal.Add(1)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		g.recordStatus(http.StatusUnauthorized)
+		return
+	}
+
+	if !isMultipart(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusBadRequest, "multipart form upload required")
+		g.recordStatus(http.StatusBadRequest)
+		return
+	}
+
+	body, err := readLimited(r.Body, g.cfg.maxBodyBytes)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			g.metrics.requestTooLargeTotal.Add(1)
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			g.recordStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		g.recordStatus(http.StatusBadRequest)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, g.upstreamURLWithPath("/describe").String(), bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to create upstream request")
+		g.recordStatus(http.StatusBadGateway)
+		return
+	}
+	copyProxyHeaders(req.Header, r.Header)
+	req.ContentLength = int64(len(body))
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
+			status = http.StatusGatewayTimeout
+		}
+		g.metrics.upstreamErrorsTotal.Add(1)
+		writeError(w, status, "describe upstream unavailable")
+		g.recordStatus(status)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		g.logger.Warn("copy upstream describe response failed", "error", err)
+	}
+	g.recordStatus(resp.StatusCode)
+	if resp.StatusCode >= 500 {
+		g.metrics.upstreamErrorsTotal.Add(1)
+	}
 }
 
 func (g *gateway) notFound(w http.ResponseWriter, _ *http.Request) {

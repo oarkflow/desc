@@ -25,12 +25,16 @@ class OCRReader:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
         gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-        data = self._pytesseract.image_to_data(
-            gray,
-            lang=self.language_code,
-            config="--psm 6",
-            output_type=self._pytesseract.Output.DICT,
-        )
+        try:
+            data = self._pytesseract.image_to_data(
+                gray,
+                lang=self.language_code,
+                config="--psm 6",
+                output_type=self._pytesseract.Output.DICT,
+            )
+        except Exception:
+            self.available = False
+            return ""
         words = []
         scored_words = []
         for word, confidence in zip(data.get("text", []), data.get("conf", [])):

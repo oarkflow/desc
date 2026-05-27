@@ -30,6 +30,271 @@ Health check:
 curl http://localhost:8000/healthz
 ```
 
+## Complete Local Examples
+
+Run the Python OCR/KYC HTTP server locally:
+
+```sh
+make -C kyc run PORT=8001
+```
+
+Run the Go gateway against that local OCR server from a second terminal:
+
+```sh
+cd kyc
+GATEWAY_PORT=8000 \
+GATEWAY_OCR_UPSTREAM=http://127.0.0.1:8001 \
+GATEWAY_API_KEY=change-me \
+go run ./cmd/gateway
+```
+
+Run the complete real-model image matrix and write reports:
+
+```sh
+make -C kyc image-matrix
+```
+
+Generated reports:
+
+```text
+test-results/image-matrix/report.md
+test-results/image-matrix/results.json
+kyc/reports/image-feature-test-report.md
+```
+
+### CLI Checks
+
+Run all local capability checks:
+
+```sh
+cd kyc
+.venv/bin/python scripts/check_all.py
+```
+
+Run any individual identity-suite feature through one dispatcher:
+
+```sh
+cd kyc
+
+# Document fields + document face/photo detection + document anti-spoof
+.venv/bin/python scripts/identity_suite.py document \
+  --image testdata/national-id.webp \
+  --json ../test-results/document-identity/national-id.json
+
+# Citizenship card fields + document face/photo detection + document anti-spoof
+.venv/bin/python scripts/identity_suite.py document \
+  --image testdata/nepali-citizenship-card.png.webp \
+  --json ../test-results/document-identity/citizenship-card.json
+
+# Add summaries or full OCR evidence only when needed
+.venv/bin/python scripts/identity_suite.py document \
+  --image testdata/nepali-citizenship-card.png.webp \
+  --result-mode summary \
+  --crop-faces \
+  --json ../test-results/document-identity/citizenship-card-summary.json
+
+.venv/bin/python scripts/identity_suite.py document \
+  --image testdata/nepali-citizenship-card.png.webp \
+  --result-mode full \
+  --json ../test-results/document-identity/citizenship-card-full.json
+
+# Force a profile only when debugging a specific extractor
+.venv/bin/python scripts/identity_suite.py document \
+  --image testdata/nepali-citizenship-card.png.webp \
+  --document-type nepali_citizenship_mixed_language \
+  --force-document-type \
+  --json ../test-results/document-identity/citizenship-card-forced.json
+
+# Document fields + document face match against a selfie/reference face
+.venv/bin/python scripts/identity_suite.py document \
+  --image testdata/national-id.webp \
+  --match-face /tmp/kyc_identity_selfie.jpg \
+  --match-landmarks \
+  --json ../test-results/document-identity/national-id-match.json
+
+# Face detection with landmarks and overlay
+.venv/bin/python scripts/identity_suite.py face-detect \
+  testdata/citizenship.jpg \
+  --overlay both \
+  --output ../test-results/face/document-face.overlay.jpg \
+  --crop-dir ../test-results/face/crops \
+  --json ../test-results/face/document-face.json
+
+# Face enrollment and recognition
+.venv/bin/python scripts/identity_suite.py face-enroll alice /path/to/alice-images \
+  --db ../test-results/face/known-faces
+
+.venv/bin/python scripts/identity_suite.py face-recognize /path/to/query.jpg \
+  --db ../test-results/face/known-faces \
+  --json ../test-results/face/recognition.json
+
+# Face search over a folder or image-list file
+.venv/bin/python scripts/identity_suite.py face-search /path/to/query.jpg /path/to/search-folder \
+  --verbose \
+  --overlay-dir ../test-results/face/search-overlays \
+  --crop-dir ../test-results/face/search-crops \
+  --json ../test-results/face/search.json
+
+# Liveness and face anti-spoofing
+.venv/bin/python scripts/identity_suite.py liveness --image /tmp/kyc_identity_selfie.jpg
+.venv/bin/python scripts/identity_suite.py anti-spoof --image /tmp/kyc_identity_selfie.jpg
+
+# Image description/tamper, KYC flow, and full matrix
+.venv/bin/python scripts/identity_suite.py describe --image testdata/citizenship.jpg --allow-empty-text
+.venv/bin/python scripts/identity_suite.py kyc-flow --document testdata/national-id.webp
+.venv/bin/python scripts/identity_suite.py matrix
+```
+
+Run the underlying scripts directly when you want focused checks:
+
+```sh
+cd kyc
+
+# Document fields, document face/photo crops, document anti-spoof, and optional selfie match
+.venv/bin/python scripts/check_document_identity.py \
+  --image testdata/national-id.webp \
+  --match-face /tmp/kyc_identity_selfie.jpg \
+  --match-landmarks \
+  --json ../test-results/document-identity/national-id-match.json
+
+# OCR and document field extraction
+.venv/bin/python scripts/check_ocr.py \
+  --image testdata/national-id.webp \
+  --document-type nepali_national_id \
+  --values-only \
+  --accuracy-mode fast \
+  --no-retry
+
+# Document/image description, object tags, OCR text, and tamper summary
+.venv/bin/python scripts/check_describe.py \
+  --image testdata/citizenship.jpg \
+  --allow-empty-text
+
+# Face detection, 478-point landmarks, recognition, and demographics
+.venv/bin/python scripts/check_face.py \
+  --detection-mode yunet \
+  --landmark-mode mediapipe \
+  --require-demographics
+
+# Face/liveness frame state with anti-spoofing result embedded
+.venv/bin/python scripts/check_liveness.py \
+  --challenge look_center
+
+# Direct ONNX face anti-spoofing inference
+.venv/bin/python scripts/check_anti_spoof.py
+
+# Full KYC session flow with document, selfie, and liveness records
+.venv/bin/python scripts/check_kyc_flow.py \
+  --document testdata/national-id.webp
+```
+
+Face CLI examples from the repository root:
+
+```sh
+# Analyze one image and save JSON/overlay outputs
+kyc/.venv/bin/python -m kyc.face.cli \
+  --detection-mode yunet \
+  --landmark-mode mediapipe \
+  --mediapipe-model kyc/models/face_landmarker.task \
+  analyze kyc/testdata/citizenship.jpg \
+  --json test-results/face.json \
+  --output test-results/face.overlay.jpg
+
+# Batch detect every supported image in a folder
+kyc/.venv/bin/python -m kyc.face.cli \
+  --landmark-mode mediapipe \
+  --mediapipe-model kyc/models/face_landmarker.task \
+  detect-all test-results/image-matrix/fixtures \
+  --output-dir test-results/face-detect-all \
+  --overlay both \
+  --crop
+```
+
+### Curl Requests
+
+Gateway OCR:
+
+```sh
+curl -sS -X POST "http://localhost:8000/ocr?values_only=false&include_stats=true&detect_objects=true&accuracy_mode=fast&retry=true" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Gateway describe/tamper:
+
+```sh
+curl -sS -X POST "http://localhost:8000/describe" \
+  -H "X-API-Key: change-me" \
+  -F "file=@kyc/testdata/citizenship.jpg"
+```
+
+Gateway health and metrics:
+
+```sh
+curl -sS http://localhost:8000/healthz
+curl -sS -H "X-API-Key: change-me" http://localhost:8000/metrics
+```
+
+Gateway admin config and preview:
+
+```sh
+curl -sS -H "X-API-Key: change-me" http://localhost:8000/admin/api/config
+
+curl -sS -X POST "http://localhost:8000/admin/api/preview" \
+  -H "X-API-Key: change-me" \
+  -F "document_type=nepali_national_id" \
+  -F "values_only=false" \
+  -F "include_stats=true" \
+  -F "file=@kyc/testdata/national-id.webp"
+```
+
+Python OCR/KYC server direct requests:
+
+```sh
+# Create a KYC session
+curl -sS -X POST http://localhost:8001/api/kyc/sessions > /tmp/kyc-session.json
+
+# Extract session fields with Python/jq/etc. Example with jq:
+SESSION_ID="$(jq -r .session_id /tmp/kyc-session.json)"
+SESSION_TOKEN="$(jq -r .session_token /tmp/kyc-session.json)"
+
+# Save applicant profile
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/profile" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"full_name":"Matrix Test","date_of_birth":"1990-01-01","nationality":"Nepal","address":"Kathmandu","document_type":"national_id","document_number":"123-456-7890"}'
+
+# Upload document
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/documents" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -F "document_type=national_id" \
+  -F "side=front" \
+  -F "file=@kyc/testdata/national-id.webp"
+
+# Upload selfie
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/selfie" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+
+# Process one liveness frame and complete the challenge
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/liveness/frame" \
+  -H "X-Session-Token: ${SESSION_TOKEN}" \
+  -F "file=@/tmp/kyc_identity_selfie.jpg"
+
+curl -sS -X POST "http://localhost:8001/api/kyc/sessions/${SESSION_ID}/liveness/complete" \
+  -H "X-Session-Token: ${SESSION_TOKEN}"
+
+# Fetch the final case
+curl -sS "http://localhost:8001/api/kyc/sessions/${SESSION_ID}" \
+  -H "X-Session-Token: ${SESSION_TOKEN}"
+```
+
+## Anti-Spoofing And Tamper Coverage
+
+Face anti-spoofing is implemented for both live face images and document images through `kyc.core.liveness.AntiSpoofingProvider`. For liveness frames and videos, the ONNX model runs on the detected face crop and returns `anti_spoofing.status` as `live`, `spoof`, or `needs_manual_review`; liveness marks the session risk as `fail` when the model returns `spoof`.
+
+Document anti-spoofing runs when OCR object detection finds `face`, `photo`, or `portrait` regions on an uploaded document. Each matching object gets an `anti_spoofing` result, and the aggregate appears at `object_summary.anti_spoofing` and `tamper.checks.object_summary.anti_spoofing`. Document protection still also includes OCR/describe tamper analysis: `tamper`, `tamper_score`, `flags`, expected object checks, protected-region checks, field validation, and object summaries. Use `/ocr?values_only=false&detect_objects=true` for document OCR plus anti-spoof/tamper/object evidence.
+
 ## HTTP Endpoints
 
 ### `GET /admin`
@@ -113,7 +378,7 @@ Query parameters forwarded to the OCR service:
 
 | Parameter | Default at gateway | Description |
 | --- | --- | --- |
-| `document_type` | auto-detect upstream | Optional document profile hint. Known profiles include `nepali_citizenship_old_front`, `nepali_citizenship_front_back`, `nepali_citizenship_mixed_language`, `nepali_national_id`, and `generic_devanagari_document`. |
+| `document_type` | auto-detect upstream | Optional forced document profile override. Omit this for normal use so OCR detects the profile from document cues. Known profiles include `nepali_citizenship_old_front`, `nepali_citizenship_front_back`, `nepali_citizenship_mixed_language`, `nepali_national_id`, and `generic_devanagari_document`. |
 | `lang` | OCR service default, usually `ne` | OCR language override. |
 | `accuracy_mode` | `accurate` | Gateway injects this when omitted. OCR supports profile-dependent behavior for `fast` and `accurate`. |
 | `retry` | `true` | Gateway injects this when omitted. Set `false` for lower-latency requests. |
@@ -138,7 +403,7 @@ curl -X POST "http://localhost:8000/ocr" \
 Full response request:
 
 ```sh
-curl -X POST "http://localhost:8000/ocr?document_type=nepali_national_id&values_only=false&accuracy_mode=accurate&retry=true" \
+curl -X POST "http://localhost:8000/ocr?values_only=false&accuracy_mode=accurate&retry=true" \
   -H "X-API-Key: change-me" \
   -F "file=@testdata/national-id.webp"
 ```
@@ -263,7 +528,13 @@ The gateway passes upstream OCR response headers, status codes, and bodies throu
 
 ### `POST /describe`
 
-Runs the local image description pipeline in the Python OCR service. The implementation lives under `kyc/describe` and returns detected objects, a rule-based caption, optional Tesseract OCR text, tags, dimensions, and a lightweight tamper heuristic.
+Proxies an image description request to the Python OCR service. If `GATEWAY_API_KEY` is set, the request must include `X-API-Key`. The implementation lives under `kyc/describe` and returns detected objects, a rule-based caption, optional Tesseract OCR text, tags, dimensions, and a lightweight tamper heuristic.
+
+```sh
+curl -X POST "http://localhost:8000/describe" \
+  -H "X-API-Key: change-me" \
+  -F "file=@testdata/citizenship.jpg"
+```
 
 ### Face Analysis
 
